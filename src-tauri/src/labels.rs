@@ -9,6 +9,25 @@ pub const MAX_CHARS: usize = 32;
 
 pub type Labels = HashMap<String, String>;
 
+const HIDDEN_FILE: &str = "hidden.json";
+
+/// Ids of accounts the user has hidden. They stay signed in and keep renewing,
+/// but are not shown, not recommended in the menubar, and not checked for usage.
+pub fn load_hidden(data_dir: &Path) -> Vec<String> {
+    fs::read_to_string(data_dir.join(HIDDEN_FILE))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_hidden(data_dir: &Path, hidden: &[String]) -> Result<(), String> {
+    fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(hidden).map_err(|e| e.to_string())?;
+    let tmp = data_dir.join(format!("{HIDDEN_FILE}.tmp"));
+    fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, data_dir.join(HIDDEN_FILE)).map_err(|e| e.to_string())
+}
+
 pub fn load(data_dir: &Path) -> Labels {
     fs::read_to_string(data_dir.join(FILE_NAME))
         .ok()

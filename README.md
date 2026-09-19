@@ -40,6 +40,8 @@ The app lives in the menubar: click the gauge to open it, press Esc to hide it.
 - Shows the default authed Claude Code already as a read-only row.
 - Renews its own logins before they expire, so accounts stay connected.
 - Lets you put a free-text label on any account, for example which computer uses it.
+- Sorts by any limit, by most room left, or by name: click a column header in the grid, or use the Sort control.
+- Hides accounts you rarely use. A hidden account stays signed in, but is not checked, shown or recommended in the menubar, and one click brings it back.
 - Optionally checks your other computers over SSH and marks which account each one is signed in to, and whether Claude sessions are running there right now.
 
 ## How it works

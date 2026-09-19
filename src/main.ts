@@ -13,6 +13,7 @@ type AccountUsage = {
   id: string;
   label: string;
   tag: string | null;
+  hidden: boolean;
   machines: MachineBadge[];
   plan: string | null;
   read_only: boolean;
@@ -76,6 +77,8 @@ const compactWrap = $("#compact-wrap");
 const pinBtn = $<HTMLButtonElement>("#pin");
 const dockInput = $<HTMLInputElement>("#dock-icon");
 const fitBtn = $<HTMLButtonElement>("#fit");
+const sortSelect = $<HTMLSelectElement>("#sort");
+const sortDirBtn = $<HTMLButtonElement>("#sort-dir");
 const machinesToggle = $<HTMLButtonElement>("#machines-toggle");
 const machinesPanel = $("#machines-panel");
 const machinesList = $("#machines-list");
@@ -211,6 +214,99 @@ function renderReading(w: UsageWindow, resetPrefix: string): HTMLElement {
     : "This limit's clock starts with the next message.";
   reading.append(reset);
   return reading;
+}
+
+/* ---------- Sorting and hiding ---------- */
+
+// "added" = the order accounts were added. "room" = tightest limit. "name".
+// Anything else is a limit's key (session, weekly_all, weekly_scoped:…).
+let sortKey = loadSetting("sortKey", "added");
+let sortDir: "asc" | "desc" = loadSetting("sortDir", "asc") === "desc" ? "desc" : "asc";
+
+function sortValue(a: AccountUsage, key: string): number | string | null {
+  if (key === "name") return a.label.toLowerCase();
+  if (a.windows.length === 0) return null;
+  if (key === "room") return Math.max(...a.windows.map((w) => w.utilization));
+  return a.windows.find((w) => w.key === key)?.utilization ?? null;
+}
+
+/** Accounts with nothing to compare (no reading, or no such limit) always sink to the bottom. */
+function sortAccounts(list: AccountUsage[]): AccountUsage[] {
+  if (sortKey === "added") return sortDir === "asc" ? list : [...list].reverse();
+  const flip = sortDir === "asc" ? 1 : -1;
+  return [...list].sort((x, y) => {
+    const a = sortValue(x, sortKey);
+    const b = sortValue(y, sortKey);
+    if (a === null || b === null) return a === b ? 0 : a === null ? 1 : -1;
+    if (typeof a === "string" || typeof b === "string") return flip * String(a).localeCompare(String(b));
+    return flip * (a - b);
+  });
+}
+
+function setSort(key: string, dir: "asc" | "desc") {
+  sortKey = key;
+  sortDir = dir;
+  saveSetting("sortKey", key);
+  saveSetting("sortDir", dir);
+  render();
+}
+
+/** Grid headers cycle: low to high, high to low, then back to the added order. */
+function cycleSort(key: string) {
+  if (sortKey !== key) setSort(key, "asc");
+  else if (sortDir === "asc") setSort(key, "desc");
+  else setSort("added", "asc");
+}
+
+function syncSortControls(columns: { key: string; label: string }[]) {
+  const options: [string, string][] = [
+    ["added", "Order added"],
+    ["room", "Most room left"],
+    ["name", "Name"],
+    ...columns.map((c): [string, string] => [c.key, c.label]),
+  ];
+  if (!options.some(([key]) => key === sortKey)) sortKey = "added";
+  sortSelect.replaceChildren(
+    ...options.map(([key, label]) => {
+      const option = el("option", undefined, label);
+      option.value = key;
+      return option;
+    }),
+  );
+  sortSelect.value = sortKey;
+  const numeric = sortKey !== "name" && sortKey !== "added";
+  sortDirBtn.textContent = sortDir === "asc" ? "↑" : "↓";
+  sortDirBtn.title = numeric
+    ? sortDir === "asc"
+      ? "Least used first. Click to reverse."
+      : "Most used first. Click to reverse."
+    : "Click to reverse the order";
+}
+
+async function setHidden(a: AccountUsage, hidden: boolean) {
+  try {
+    await invoke("set_hidden", { id: a.id, hidden });
+    noticeEl.textContent = hidden ? `Hid ${a.label}. It stays signed in; find it under Hidden below.` : "";
+  } catch (error) {
+    noticeEl.textContent = String(error);
+  }
+  void refresh();
+}
+
+function renderHiddenList(hidden: AccountUsage[]): HTMLElement {
+  const box = el("div", "hidden-list");
+  box.append(el("span", "hidden-title", `Hidden (${hidden.length})`));
+  for (const a of hidden) {
+    const item = el("span", "hidden-item");
+    item.append(el("span", "hidden-name", a.label));
+    const show = el("button", "link", "Show");
+    show.type = "button";
+    show.addEventListener("click", () => void setHidden(a, false));
+    item.append(show);
+    box.append(item);
+  }
+  box.title = "Hidden accounts stay signed in, but are not checked, shown or recommended in the menubar.";
+  return box;
 }
 
 /* ---------- Labels: free text per account, edited in place ---------- */
@@ -379,14 +475,20 @@ function renderGrid(accounts: AccountUsage[]): HTMLElement {
 
   const headRow = el("div", "board-row board-head");
   headRow.setAttribute("role", "row");
-  const corner = el("span", "board-account", "Account");
-  corner.setAttribute("role", "columnheader");
-  headRow.append(corner);
-  for (const column of columns) {
-    const th = el("span", "board-cell", column.label);
+  const header = (key: string, label: string, className: string) => {
+    const th = el("button", `${className} sort-header`, label);
+    th.type = "button";
     th.setAttribute("role", "columnheader");
-    headRow.append(th);
-  }
+    if (sortKey === key) {
+      th.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
+      th.append(el("span", "sort-arrow", sortDir === "asc" ? "↑" : "↓"));
+    }
+    th.title = `Sort by ${label.toLowerCase()}`;
+    th.addEventListener("click", () => cycleSort(key));
+    return th;
+  };
+  headRow.append(header("name", "Account", "board-account"));
+  for (const column of columns) headRow.append(header(column.key, column.label, "board-cell"));
   board.append(headRow);
 
   for (const a of accounts) {
@@ -504,11 +606,14 @@ function renderCard(a: AccountUsage): HTMLElement {
     badge.title = failureDetail(a);
     meta.append(badge);
   }
-  if (compactCards && !a.read_only) {
-    const remove = renderRemove(a);
-    remove.classList.add("meta-action");
-    meta.append(remove);
-  }
+  const hide = el("button", "link", "Hide");
+  hide.type = "button";
+  hide.title = "Hide this account. It stays signed in and can be shown again from the Hidden list.";
+  hide.addEventListener("click", () => void setHidden(a, true));
+  const actions = el("span", "meta-action");
+  actions.append(hide);
+  if (compactCards && !a.read_only) actions.append(renderRemove(a));
+  meta.append(actions);
   if (meta.childElementCount > 0) block.append(meta);
 
   if (a.message && !updateFailed(a)) block.append(el("p", "message", a.message));
@@ -556,9 +661,18 @@ function render() {
   compactInput.checked = compactCards;
   compactWrap.hidden = view !== "cards";
   if (lastAccounts.length === 0 || editingLabel) return;
-  accountsEl.replaceChildren(
-    ...(view === "grid" ? [renderGrid(lastAccounts)] : lastAccounts.map(renderCard)),
-  );
+  const hiddenAccounts = lastAccounts.filter((a) => a.hidden);
+  const shown = lastAccounts.filter((a) => !a.hidden);
+  syncSortControls(gridColumns(shown));
+  const sorted = sortAccounts(shown);
+  const parts: HTMLElement[] =
+    sorted.length === 0
+      ? [el("p", "message", "Every account is hidden.")]
+      : view === "grid"
+        ? [renderGrid(sorted)]
+        : sorted.map(renderCard);
+  if (hiddenAccounts.length > 0) parts.push(renderHiddenList(hiddenAccounts));
+  accountsEl.replaceChildren(...parts);
   renderMachines();
   // Repainted every minute along with the rest, so "X min ago" stays true.
   updatedEl.textContent = describeFreshness(lastAccounts);
@@ -681,6 +795,8 @@ pinBtn.addEventListener("click", async () => {
   const pinned = pinBtn.getAttribute("aria-pressed") !== "true";
   applyAppSettings(await invoke<AppSettings>("set_pinned", { pinned }));
 });
+sortSelect.addEventListener("change", () => setSort(sortSelect.value, sortDir));
+sortDirBtn.addEventListener("click", () => setSort(sortKey, sortDir === "asc" ? "desc" : "asc"));
 machinesToggle.addEventListener("click", () => {
   machinesPanel.hidden = !machinesPanel.hidden;
   saveSetting("machinesOpen", machinesPanel.hidden ? "0" : "1");

@@ -43,6 +43,8 @@ struct AccountUsage {
     label: String,
     /// Free text the user attached to this account, if any.
     tag: Option<String>,
+    /// Hidden by the user: kept signed in, but off screen and out of the menubar pick.
+    hidden: bool,
     /// Other machines found signed in to this account (see `machines.rs`).
     machines: Vec<MachineBadge>,
     plan: Option<String>,
@@ -126,12 +128,14 @@ fn row_for(
     target: &Target,
     cache: &UsageCache,
     labels: &labels::Labels,
+    hidden: &[String],
     seen_on: &HashMap<String, Vec<MachineBadge>>,
 ) -> AccountUsage {
     let mut row = AccountUsage {
         id: target.id.clone(),
         label: target.label.clone(),
         tag: labels.get(&target.id).cloned(),
+        hidden: hidden.contains(&target.id),
         // Accounts are matched to machines by email, which is what the label is.
         machines: seen_on
             .get(&target.label.to_lowercase())
@@ -258,9 +262,15 @@ async fn collect_usage(app: &AppHandle, force: bool) -> Result<Vec<AccountUsage>
     }
 
     // Only accounts whose reading is due touch the network; they go in parallel.
+    let hidden = labels::load_hidden(&data_dir(app)?);
     let now = now_ms();
     let mut fetches = Vec::new();
     for target in &targets {
+        // Hidden accounts keep renewing (above) so they stay signed in, but do
+        // not spend the usage endpoint's tight budget.
+        if hidden.contains(&target.id) {
+            continue;
+        }
         let Some(oauth) = target.usable_oauth() else { continue };
         let due = cache
             .entry(&target.id)
@@ -301,7 +311,7 @@ async fn collect_usage(app: &AppHandle, force: bool) -> Result<Vec<AccountUsage>
     }
     Ok(targets
         .iter()
-        .map(|target| row_for(target, &cache, &labels, &seen_on))
+        .map(|target| row_for(target, &cache, &labels, &hidden, &seen_on))
         .collect())
 }
 
@@ -310,7 +320,7 @@ async fn collect_usage(app: &AppHandle, force: bool) -> Result<Vec<AccountUsage>
 fn publish(app: &AppHandle, rows: &[AccountUsage]) {
     let candidates: Vec<tray::Candidate> = rows
         .iter()
-        .filter(|row| !matches!(row.status, AccountStatus::NeedsLogin))
+        .filter(|row| !row.hidden && !matches!(row.status, AccountStatus::NeedsLogin))
         .map(|row| tray::Candidate {
             label: &row.label,
             utilizations: row.windows.iter().map(|w| w.utilization).collect(),
@@ -526,6 +536,26 @@ async fn set_label(app: AppHandle, id: String, text: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Hides or shows one account, then pushes fresh rows (an account that was
+/// just shown again gets its usage checked right away).
+#[tauri::command]
+async fn set_hidden(app: AppHandle, id: String, hidden: bool) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    let known = id == DEFAULT_ID || accounts::load(&dir).iter().any(|a| a.id == id);
+    if !known {
+        return Err("Unknown account.".to_string());
+    }
+    let mut all = labels::load_hidden(&dir);
+    all.retain(|existing| existing != &id);
+    if hidden {
+        all.push(id);
+    }
+    labels::save_hidden(&dir, &all)?;
+    let rows = collect_usage(&app, false).await?;
+    publish(&app, &rows);
+    Ok(())
+}
+
 #[tauri::command]
 fn cancel_login(login_state: State<'_, LoginState>) -> bool {
     login_state
@@ -558,6 +588,11 @@ async fn remove_account(
     if all.remove(&id).is_some() {
         labels::save(&dir, &all)?;
     }
+    let mut hidden = labels::load_hidden(&dir);
+    if hidden.contains(&id) {
+        hidden.retain(|existing| existing != &id);
+        labels::save_hidden(&dir, &hidden)?;
+    }
     Ok(())
 }
 
@@ -586,6 +621,7 @@ pub fn run() {
             cancel_login,
             remove_account,
             set_label,
+            set_hidden,
             list_machines,
             add_machine,
             remove_machine,
