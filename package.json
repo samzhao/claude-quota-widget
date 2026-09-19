@@ -15,7 +15,9 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
-		"vite": "^8.0.16",
+    "vite": "^8.0.16",
     "typescript": "~6.0.3"
-  }
+  },
+  "license": "MIT",
+  "description": "See the usage limits of several Claude accounts side by side"
 }

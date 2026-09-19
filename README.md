@@ -52,3 +52,7 @@ This is an unofficial personal project. It is not affiliated with, endorsed by, 
 - It relies on undocumented endpoints and the public OAuth client id used by Claude Code. These are not a supported API. They can change or stop working at any time, and this app may break without notice.
 - You are responsible for making sure your use complies with Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) and [Usage Policy](https://www.anthropic.com/legal/aup), including any rules about how many accounts you may hold. If you are unsure, do not use it.
 - Provided as is, with no warranty. If Anthropic asks for this project to be changed or taken down, it will be.
+
+## License
+
+[MIT](LICENSE)
