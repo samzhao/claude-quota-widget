@@ -57,9 +57,18 @@ fn backoff(start_ms: f64, max_ms: f64, failures: u32) -> f64 {
 }
 
 impl Entry {
+    /// After a throttle or a failed request, the backoff window is the pacing:
+    /// once it closes, try again rather than also waiting out the reuse age.
+    fn is_recovering(&self) -> bool {
+        matches!(self.problem, Some(Problem::Throttled | Problem::Failed(_)))
+    }
+
     pub fn decide(&self, now_ms: f64, force: bool) -> Decision {
         if now_ms < self.backoff_until_ms {
             return Decision::UseCache;
+        }
+        if self.is_recovering() {
+            return Decision::Fetch;
         }
         let min_age = if force { FORCED_MIN_AGE_MS } else { AUTO_MIN_AGE_MS };
         if now_ms - self.last_attempt_ms < min_age {
@@ -81,12 +90,17 @@ impl Entry {
             }
             Err(UsageError::RateLimited(retry_after_secs)) => {
                 self.failures += 1;
-                // The server's own Retry-After wins; retrying earlier keeps the 429 alive.
-                let wait = retry_after_secs
-                    .map(|secs| (secs as f64 * 1000.0).max(MINUTE_MS))
-                    .unwrap_or_else(|| {
-                        backoff(THROTTLE_BACKOFF_START_MS, THROTTLE_BACKOFF_MAX_MS, self.failures)
-                    });
+                // Never earlier than the server's Retry-After: that keeps the 429
+                // alive. A first throttle trusts it as is; repeats mean it was
+                // too optimistic, so our own doubling backoff becomes the floor.
+                let own = |failures| {
+                    backoff(THROTTLE_BACKOFF_START_MS, THROTTLE_BACKOFF_MAX_MS, failures)
+                };
+                let wait = match retry_after_secs.map(|secs| secs as f64 * 1000.0) {
+                    None => own(self.failures),
+                    Some(server) if self.failures <= 1 => server.max(MINUTE_MS),
+                    Some(server) => server.max(own(self.failures - 1)),
+                };
                 self.backoff_until_ms = now_ms + wait;
                 self.problem = Some(Problem::Throttled);
             }
@@ -106,8 +120,11 @@ impl Entry {
 
     /// Earliest moment a non-forced check would hit the network again.
     pub fn next_check_ms(&self) -> f64 {
-        self.backoff_until_ms
-            .max(self.last_attempt_ms + AUTO_MIN_AGE_MS)
+        if self.is_recovering() {
+            self.backoff_until_ms
+        } else {
+            self.last_attempt_ms + AUTO_MIN_AGE_MS
+        }
     }
 }
 
@@ -217,6 +234,29 @@ mod tests {
         entry.record(Err(UsageError::RateLimited(Some(1200))), T0);
         assert_eq!(entry.backoff_until_ms, T0 + 20.0 * MINUTE_MS);
         assert_eq!(entry.next_check_ms(), T0 + 20.0 * MINUTE_MS);
+    }
+
+    #[test]
+    fn throttled_account_retries_when_the_servers_window_closes() {
+        let mut entry = Entry::default();
+        entry.record(Err(UsageError::RateLimited(Some(84))), T0);
+        let reopened = T0 + 84_000.0;
+        assert_eq!(entry.decide(reopened - 1.0, true), Decision::UseCache);
+        // Not forced, and well inside the 5-minute reuse age: still due.
+        assert_eq!(entry.decide(reopened, false), Decision::Fetch);
+        assert_eq!(entry.next_check_ms(), reopened);
+
+        // Throttled again straight away: the short Retry-After is no longer trusted.
+        entry.record(Err(UsageError::RateLimited(Some(84))), reopened);
+        assert_eq!(entry.backoff_until_ms, reopened + 5.0 * MINUTE_MS);
+    }
+
+    #[test]
+    fn rejected_token_does_not_retry_in_a_loop() {
+        let mut entry = Entry::default();
+        entry.record(Err(UsageError::Unauthorized), T0);
+        assert_eq!(entry.decide(T0 + 1.0, false), Decision::UseCache);
+        assert_eq!(entry.decide(T0 + 5.0 * MINUTE_MS, false), Decision::Fetch);
     }
 
     #[test]
