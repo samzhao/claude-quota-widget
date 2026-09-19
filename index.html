@@ -8,8 +8,9 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
-    <header>
-      <h1>Claude Quota</h1>
+    <div id="app">
+    <header data-tauri-drag-region>
+      <h1 data-tauri-drag-region>Claude Quota</h1>
       <div class="header-actions">
         <div class="segmented" role="group" aria-label="View">
           <button id="view-grid" type="button" aria-pressed="true">Grid</button>
@@ -68,5 +69,6 @@
       </div>
       <p id="notice" class="message" role="status"></p>
     </footer>
+    </div>
   </body>
 </html>

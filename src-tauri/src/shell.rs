@@ -191,6 +191,16 @@ fn persist(app: &AppHandle, settings: &Settings) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn hide_window(app: AppHandle, ui: State<'_, UiState>) {
+    if let Ok(mut ui) = ui.0.lock() {
+        ui.transient = false;
+    }
+    if let Some(window) = main_window(&app) {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
 }

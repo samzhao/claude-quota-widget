@@ -395,6 +395,7 @@ pub fn run() {
             add_account,
             cancel_login,
             remove_account,
+            shell::hide_window,
             shell::quit_app,
             shell::get_settings,
             shell::set_pinned,

@@ -508,6 +508,10 @@ void listen<AccountUsage[]>("usage-updated", (event) => {
   lastAccounts = event.payload;
   render();
 }).catch(() => {});
+// Frameless window: no close button, so Esc hides it (the menubar item toggles it back).
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") void invoke("hide_window");
+});
 $<HTMLButtonElement>("#quit").addEventListener("click", () => void invoke("quit_app"));
 void invoke<AppSettings | null>("get_settings")
   .then((settings) => settings && applyAppSettings(settings))
