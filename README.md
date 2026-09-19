@@ -1,25 +1,19 @@
 # Claude Quota
 
-A small macOS app that shows the usage limits of several Claude accounts side by side.
+A small macOS (Tauri) app that shows the usage limits of multiple Claude accounts at once.
 
-Claude Code only keeps one login active at a time, so checking how much quota is left on your other accounts means logging out and back in. This app keeps a separate login for each account and shows all of them at once: the 5-hour session limit, the weekly all-models limit, and per-model limits such as Fable.
+Claude Code only keeps one login active at a time, so checking how much quota is left on your other accounts means logging out and back in or keeping multiple Chrome profile tabs with each account open showing the Usage page. This app keeps a separate login for each account and shows all of them at once.
 
 | Warm theme | Instrument theme |
 |---|---|
 | ![Grid view, warm theme](docs/screenshots/grid-warm.png) | ![Grid view, instrument theme](docs/screenshots/grid-instrument.png) |
 
-There is also a Cards view with an optional compact layout:
-
-<img src="docs/screenshots/cards-compact-warm.png" alt="Compact cards view" width="470" />
-
-The screenshots use made-up accounts.
-
 ## What it does
 
 - Adds an account by running the official `claude auth login` in a throwaway config folder. Your browser opens, you sign in, and the row appears. No email or API key to type.
-- Shows every account at once in a grid (accounts down, limits across) or as cards.
+- Shows all accounts at once in a grid (accounts down, limits across) or as cards and require no switching.
 - Shows when each limit resets, how old each reading is, and a badge when a check failed and why.
-- Shows the login Claude Code already uses on this Mac as a read-only row.
+- Shows the default authed Claude Code already as a read-only row.
 - Renews its own logins before they expire, so accounts stay connected.
 
 ## How it works
