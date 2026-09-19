@@ -1,10 +1,12 @@
 mod accounts;
+mod cache;
 mod credentials;
 mod keychain;
 mod login;
 mod usage;
 
 use accounts::Account;
+use cache::{Decision, Problem, UsageCache};
 use credentials::Oauth;
 use serde::Serialize;
 use std::{
@@ -14,7 +16,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::oneshot;
-use usage::{UsageError, UsageWindow};
+use usage::UsageWindow;
 
 const DEFAULT_ID: &str = "default";
 
@@ -37,8 +39,15 @@ struct AccountUsage {
     status: AccountStatus,
     message: Option<String>,
     windows: Vec<UsageWindow>,
-    fetched_at_ms: f64,
+    /// When `windows` was actually read from Anthropic. None = never.
+    as_of_ms: Option<f64>,
+    /// Earliest time an automatic check will hit the network again.
+    next_check_ms: Option<f64>,
 }
+
+/// Async mutex on purpose: it is held across the fetches so two overlapping
+/// `list_usage` calls cannot both spend a request on the same account.
+struct CacheState(tokio::sync::Mutex<UsageCache>);
 
 /// Holds the cancel handle of the one login allowed to run at a time.
 #[derive(Default)]
@@ -55,93 +64,146 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
 
-async fn usage_row(id: String, label: String, read_only: bool, oauth: Option<Oauth>) -> AccountUsage {
-    let relogin_hint = if read_only {
-        "Run Claude Code on this Mac once to refresh it."
-    } else {
-        "Remove and re-add this account."
-    };
+struct Target {
+    id: String,
+    label: String,
+    read_only: bool,
+    oauth: Option<Oauth>,
+}
+
+impl Target {
+    fn relogin_hint(&self) -> &'static str {
+        if self.read_only {
+            "Run Claude Code on this Mac once to refresh it."
+        } else {
+            "Remove and re-add this account."
+        }
+    }
+
+    /// A login we can actually call the endpoint with right now.
+    fn usable_oauth(&self) -> Option<&Oauth> {
+        self.oauth.as_ref().filter(|oauth| !oauth.is_expired(now_ms()))
+    }
+}
+
+fn row_for(target: &Target, cache: &UsageCache) -> AccountUsage {
     let mut row = AccountUsage {
-        id,
-        label,
-        plan: None,
-        read_only,
+        id: target.id.clone(),
+        label: target.label.clone(),
+        plan: target.oauth.as_ref().and_then(Oauth::plan),
+        read_only: target.read_only,
         status: AccountStatus::Ok,
         message: None,
         windows: Vec::new(),
-        fetched_at_ms: now_ms(),
+        as_of_ms: None,
+        next_check_ms: None,
     };
+    let hint = target.relogin_hint();
 
-    let Some(oauth) = oauth else {
+    if target.oauth.is_none() {
         row.status = AccountStatus::NeedsLogin;
         row.message = Some("No stored login found.".to_string());
         return row;
-    };
-    row.plan = oauth.plan();
-
-    if oauth.is_expired(now_ms()) {
+    }
+    if target.usable_oauth().is_none() {
         row.status = AccountStatus::NeedsLogin;
-        row.message = Some(format!("Token expired. {relogin_hint}"));
+        row.message = Some(format!("Token expired. {hint}"));
         return row;
     }
 
-    match usage::fetch(oauth.access_token()).await {
-        Ok(windows) => row.windows = windows,
-        Err(UsageError::Unauthorized) => {
-            row.status = AccountStatus::NeedsLogin;
-            row.message = Some(format!("Token rejected. {relogin_hint}"));
-        }
-        Err(UsageError::RateLimited) => {
+    let Some(entry) = cache.entry(&target.id) else {
+        return row;
+    };
+    row.windows = entry.windows.clone();
+    row.as_of_ms = (entry.fetched_at_ms > 0.0).then_some(entry.fetched_at_ms);
+    row.next_check_ms = Some(entry.next_check_ms());
+    match &entry.problem {
+        None => {}
+        Some(Problem::Throttled) => {
             row.status = AccountStatus::RateLimited;
-            row.message = Some("Usage endpoint is throttling. Will retry.".to_string());
+            row.message = Some("Anthropic is throttling usage checks.".to_string());
         }
-        Err(UsageError::Other(message)) => {
+        Some(Problem::Unauthorized) => {
+            row.status = AccountStatus::NeedsLogin;
+            row.message = Some(format!("Token rejected. {hint}"));
+        }
+        Some(Problem::Failed(message)) => {
             row.status = AccountStatus::Error;
-            row.message = Some(message);
+            row.message = Some(message.clone());
         }
     }
     row
 }
 
 #[tauri::command]
-async fn list_usage(app: AppHandle) -> Result<Vec<AccountUsage>, String> {
+async fn list_usage(
+    app: AppHandle,
+    cache_state: State<'_, CacheState>,
+    force: Option<bool>,
+) -> Result<Vec<AccountUsage>, String> {
+    let force = force.unwrap_or(false);
     let managed = accounts::load(&data_dir(&app)?);
     let default_email = credentials::read_default_email();
 
-    let mut tasks = Vec::new();
+    let mut targets = Vec::new();
     // Skip the read-only default row once the same email is a managed account.
     let default_is_managed = default_email
         .as_ref()
         .is_some_and(|email| managed.iter().any(|a| a.email.as_ref() == Some(email)));
     if !default_is_managed {
-        tasks.push(tauri::async_runtime::spawn(usage_row(
-            DEFAULT_ID.to_string(),
-            default_email.unwrap_or_else(|| "~/.claude".to_string()),
-            true,
-            credentials::read_default(),
-        )));
+        targets.push(Target {
+            id: DEFAULT_ID.to_string(),
+            label: default_email.unwrap_or_else(|| "~/.claude".to_string()),
+            read_only: true,
+            oauth: credentials::read_default(),
+        });
     }
     for account in managed {
-        let oauth = credentials::read_managed(&account.id);
-        tasks.push(tauri::async_runtime::spawn(usage_row(
-            account.id.clone(),
-            account.label(),
-            false,
-            oauth,
-        )));
+        targets.push(Target {
+            oauth: credentials::read_managed(&account.id),
+            label: account.label(),
+            id: account.id,
+            read_only: false,
+        });
     }
 
-    let mut rows = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        rows.push(task.await.map_err(|e| e.to_string())?);
+    let mut cache = cache_state.0.lock().await;
+    let ids: Vec<String> = targets.iter().map(|t| t.id.clone()).collect();
+    cache.retain_ids(&ids);
+
+    // Only accounts whose reading is due touch the network; they go in parallel.
+    let now = now_ms();
+    let mut fetches = Vec::new();
+    for target in &targets {
+        let Some(oauth) = target.usable_oauth() else { continue };
+        let due = cache
+            .entry(&target.id)
+            .map_or(Decision::Fetch, |entry| entry.decide(now, force));
+        if due == Decision::Fetch {
+            let token = oauth.access_token().to_string();
+            let id = target.id.clone();
+            fetches.push(tauri::async_runtime::spawn(async move {
+                (id, usage::fetch(&token).await)
+            }));
+        }
     }
-    Ok(rows)
+    let fetched_any = !fetches.is_empty();
+    for fetch in fetches {
+        let (id, result) = fetch.await.map_err(|e| e.to_string())?;
+        cache.entry_mut(&id).record(result, now_ms());
+    }
+    if fetched_any {
+        cache.save();
+    }
+
+    Ok(targets.iter().map(|target| row_for(target, &cache)).collect())
 }
 
 #[tauri::command]
 async fn add_account(
     app: AppHandle,
     login_state: State<'_, LoginState>,
+    cache_state: State<'_, CacheState>,
     email_hint: Option<String>,
 ) -> Result<String, String> {
     let (cancel_tx, cancel_rx) = oneshot::channel();
@@ -170,6 +232,8 @@ async fn add_account(
         None => uuid::Uuid::new_v4().to_string(),
     };
     credentials::write_managed(&id, &outcome.oauth)?;
+    // Fresh tokens: drop any old reading or backoff so the next list checks right away.
+    cache_state.0.lock().await.forget(&id);
 
     let account = Account {
         id: id.clone(),
@@ -197,7 +261,11 @@ fn cancel_login(login_state: State<'_, LoginState>) -> bool {
 }
 
 #[tauri::command]
-fn remove_account(app: AppHandle, id: String) -> Result<(), String> {
+async fn remove_account(
+    app: AppHandle,
+    cache_state: State<'_, CacheState>,
+    id: String,
+) -> Result<(), String> {
     let dir = data_dir(&app)?;
     let mut list = accounts::load(&dir);
     // Only ids from our own list, so this can never target another keychain item.
@@ -206,7 +274,11 @@ fn remove_account(app: AppHandle, id: String) -> Result<(), String> {
     }
     credentials::delete_managed(&id)?;
     list.retain(|a| a.id != id);
-    accounts::save(&dir, &list)
+    accounts::save(&dir, &list)?;
+    let mut cache = cache_state.0.lock().await;
+    cache.forget(&id);
+    cache.save();
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -214,6 +286,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(LoginState::default())
+        .setup(|app| {
+            let cache = match app.path().app_data_dir() {
+                Ok(dir) => UsageCache::load(&dir),
+                Err(_) => UsageCache::default(),
+            };
+            app.manage(CacheState(tokio::sync::Mutex::new(cache)));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_usage,
             add_account,

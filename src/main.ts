@@ -16,12 +16,16 @@ type AccountUsage = {
   status: "ok" | "needs_login" | "rate_limited" | "error";
   message: string | null;
   windows: UsageWindow[];
-  fetched_at_ms: number;
+  as_of_ms: number | null;
+  next_check_ms: number | null;
 };
 
 type View = "grid" | "detail";
+type Theme = "warm" | "instrument";
 type Level = "normal" | "warning" | "critical";
 
+// The Rust cache decides whether a check really hits the network (usage
+// endpoint budget is tight), so this timer only has to be "often enough".
 const POLL_MS = 5 * 60 * 1000;
 const GAUGE_CELLS = 10;
 
@@ -51,6 +55,7 @@ const emailToggle = $<HTMLButtonElement>("#email-toggle");
 const addBtn = $<HTMLButtonElement>("#add");
 const cancelBtn = $<HTMLButtonElement>("#cancel");
 const hideUnusedInput = $<HTMLInputElement>("#hide-unused");
+const themeSelect = $<HTMLSelectElement>("#theme");
 const noticeEl = $("#notice");
 
 // Per-viewer conveniences only; the app works the same if storage is unavailable.
@@ -71,7 +76,12 @@ function saveSetting(key: string, value: string) {
 
 let view: View = loadSetting("view", "grid") === "detail" ? "detail" : "grid";
 let hideUnused = loadSetting("hideUnused", "1") === "1";
+let theme: Theme = loadSetting("theme", "warm") === "instrument" ? "instrument" : "warm";
 let lastAccounts: AccountUsage[] = [];
+
+function clock(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -120,6 +130,7 @@ function renderGauge(w: UsageWindow): HTMLElement {
   gauge.setAttribute("aria-valuemax", "100");
   gauge.setAttribute("aria-valuenow", String(Math.round(pct)));
   gauge.setAttribute("aria-label", `${w.label} used`);
+  gauge.style.setProperty("--pct", `${pct}%`);
   for (let i = 0; i < GAUGE_CELLS; i++) {
     gauge.append(el("i", i < lit ? "lit" : undefined));
   }
@@ -140,7 +151,8 @@ function renderReading(w: UsageWindow, resetPrefix: string): HTMLElement {
 
 function statusDot(a: AccountUsage): HTMLElement {
   const dot = el("span", `dot ${a.status}`);
-  dot.title = `${STATUS_TEXT[a.status]}: ${STATUS_HELP[a.status]}`;
+  const since = a.status !== "ok" && a.as_of_ms ? ` Reading from ${clock(a.as_of_ms)}.` : "";
+  dot.title = `${STATUS_TEXT[a.status]}: ${STATUS_HELP[a.status]}${since}`;
   dot.setAttribute("role", "img");
   dot.setAttribute("aria-label", STATUS_TEXT[a.status]);
   return dot;
@@ -260,7 +272,8 @@ function renderDetail(a: AccountUsage): HTMLElement {
 
   if (a.message) {
     const stale = a.status !== "ok" && a.windows.length > 0;
-    block.append(el("p", "message", stale ? `${a.message} Showing the last good reading.` : a.message));
+    const since = stale && a.as_of_ms ? ` Showing the reading from ${clock(a.as_of_ms)}.` : "";
+    block.append(el("p", "message", `${a.message}${since}`));
   }
 
   const shown = a.windows.filter((w) => !(hideUnused && isUnused(w)));
@@ -282,6 +295,11 @@ function renderDetail(a: AccountUsage): HTMLElement {
 
 /* ---------- Wiring ---------- */
 
+function applyTheme() {
+  document.documentElement.dataset.theme = theme;
+  themeSelect.value = theme;
+}
+
 function render() {
   gridBtn.setAttribute("aria-pressed", String(view === "grid"));
   detailBtn.setAttribute("aria-pressed", String(view === "detail"));
@@ -292,43 +310,22 @@ function render() {
   );
 }
 
-/**
- * A throttled or failed check comes back with no limits. Keep showing the last
- * good reading for that account (the status dot still flags it as stale)
- * rather than blanking the row.
- */
-function keepLastGoodReadings(fresh: AccountUsage[]): AccountUsage[] {
-  let cache: Record<string, UsageWindow[]> = {};
-  try {
-    cache = JSON.parse(loadSetting("lastGoodWindows", "{}"));
-  } catch {
-    cache = {};
-  }
-  const merged = fresh.map((a) => {
-    if (a.status === "ok") {
-      cache[a.id] = a.windows;
-      return a;
-    }
-    const stale = a.status === "rate_limited" || a.status === "error";
-    return stale && a.windows.length === 0 && cache[a.id]?.length
-      ? { ...a, windows: cache[a.id] }
-      : a;
-  });
-  const liveIds = new Set(fresh.map((a) => a.id));
-  for (const id of Object.keys(cache)) if (!liveIds.has(id)) delete cache[id];
-  saveSetting("lastGoodWindows", JSON.stringify(cache));
-  return merged;
+function describeFreshness(accounts: AccountUsage[]): string {
+  const readings = accounts.map((a) => a.as_of_ms).filter((ms): ms is number => ms !== null);
+  if (readings.length === 0) return "";
+  const parts = [`As of ${clock(Math.min(...readings))}`];
+  const next = accounts.map((a) => a.next_check_ms).filter((ms): ms is number => ms !== null);
+  if (next.length > 0) parts.push(`next check ${clock(Math.min(...next))}`);
+  return parts.join(", ");
 }
 
-async function refresh() {
+async function refresh(force = false) {
   refreshBtn.disabled = true;
   try {
-    lastAccounts = keepLastGoodReadings(await invoke<AccountUsage[]>("list_usage"));
+    lastAccounts = await invoke<AccountUsage[]>("list_usage", { force });
     render();
-    updatedEl.textContent = `Updated ${new Date().toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit",
-    })}`;
+    updatedEl.textContent = describeFreshness(lastAccounts);
+    updatedEl.title = "Readings are cached. Anthropic throttles this endpoint, so checks are spaced out.";
   } catch (error) {
     accountsEl.replaceChildren(el("p", "message", `Could not load usage: ${String(error)}`));
   } finally {
@@ -381,10 +378,16 @@ hideUnusedInput.addEventListener("change", () => {
 gridBtn.addEventListener("click", () => setView("grid"));
 detailBtn.addEventListener("click", () => setView("detail"));
 cancelBtn.addEventListener("click", () => void invoke("cancel_login"));
-refreshBtn.addEventListener("click", () => void refresh());
+refreshBtn.addEventListener("click", () => void refresh(true));
+themeSelect.addEventListener("change", () => {
+  theme = themeSelect.value === "instrument" ? "instrument" : "warm";
+  saveSetting("theme", theme);
+  applyTheme();
+});
 setInterval(() => void refresh(), POLL_MS);
 // Countdown text goes stale between polls; repaint it without refetching.
 setInterval(render, 60 * 1000);
 
+applyTheme();
 render();
 void refresh();

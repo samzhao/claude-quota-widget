@@ -423,3 +423,103 @@ button.link.danger:hover:not(:disabled) {
     grid-column: 2;
   }
 }
+
+/* ---------- Footer extras ---------- */
+
+.check select {
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 1px 4px;
+}
+
+p#updated {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+
+p#updated:empty {
+  display: none;
+}
+
+/* ---------- Warm theme: the original look ----------
+   Cream and clay palette, smooth progress bars, pill status badge. */
+
+:root[data-theme="warm"] {
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --ink: #1d1b18;
+  --muted: #6f6a62;
+  --rule: #e4e0d8;
+  --cell-off: #ebe7df;
+  --normal: #3f8f5b;
+  --warning: #c98a1b;
+  --critical: #c8452f;
+  --numerals: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="warm"] {
+    --bg: #1a1917;
+    --surface: #242220;
+    --ink: #efece6;
+    --muted: #a19b91;
+    --rule: #35322e;
+    --cell-off: #35322e;
+    --normal: #5fb37d;
+    --warning: #e0a93f;
+    --critical: #e8705b;
+  }
+}
+
+:root[data-theme="warm"] .gauge {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--cell-off);
+  overflow: hidden;
+}
+
+:root[data-theme="warm"] .gauge i {
+  display: none;
+}
+
+:root[data-theme="warm"] .gauge::before {
+  content: "";
+  display: block;
+  width: var(--pct, 0%);
+  height: 100%;
+  border-radius: 3px;
+  background: currentColor;
+  transition: width 0.3s ease;
+}
+
+:root[data-theme="warm"] .chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+:root[data-theme="warm"] .board,
+:root[data-theme="warm"] .account {
+  border-radius: 10px;
+}
+
+:root[data-theme="warm"] button:focus-visible,
+:root[data-theme="warm"] input:focus-visible {
+  outline-color: #b5562b;
+}
+
+:root[data-theme="warm"] button:hover:not(:disabled):not(.link):not([aria-pressed]) {
+  border-color: #b5562b;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="warm"] .gauge::before {
+    transition: none;
+  }
+}

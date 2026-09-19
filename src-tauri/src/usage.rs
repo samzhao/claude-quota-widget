@@ -3,7 +3,7 @@
 //! The endpoint and beta header are undocumented Claude Code internals and can
 //! change without notice, so they live only in this file.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct UsageWindow {
     /// Stable across accounts, so the grid view can line windows up in columns.
     pub key: String,
@@ -24,9 +24,11 @@ pub struct UsageWindow {
     pub severity: Option<String>,
 }
 
+#[derive(Debug)]
 pub enum UsageError {
     Unauthorized,
-    RateLimited,
+    /// Carries the server's Retry-After in seconds when it sent one.
+    RateLimited(Option<u64>),
     Other(String),
 }
 
@@ -129,7 +131,14 @@ pub async fn fetch(access_token: &str) -> Result<Vec<UsageWindow>, UsageError> {
     match response.status().as_u16() {
         200 => {}
         401 | 403 => return Err(UsageError::Unauthorized),
-        429 => return Err(UsageError::RateLimited),
+        429 => {
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse::<u64>().ok());
+            return Err(UsageError::RateLimited(retry_after));
+        }
         // Status only. The body is never surfaced in case it echoes request details.
         other => return Err(UsageError::Other(format!("usage endpoint returned {other}"))),
     }
@@ -199,7 +208,7 @@ mod tests {
         let windows = match result {
             Ok(w) => w,
             Err(UsageError::Unauthorized) => panic!("unauthorized"),
-            Err(UsageError::RateLimited) => panic!("rate limited"),
+            Err(UsageError::RateLimited(retry_after)) => panic!("rate limited, retry-after={retry_after:?}"),
             Err(UsageError::Other(m)) => panic!("{m}"),
         };
         for w in &windows {
