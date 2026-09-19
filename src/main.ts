@@ -275,7 +275,14 @@ let machines: MachineStatus[] = [];
 /** A filled dot means Claude sessions are running there right now. */
 function renderMachineBadges(a: AccountUsage): HTMLElement[] {
   return (a.machines ?? []).map((m) => {
-    const badge = el("span", m.running > 0 ? "machine-badge running" : "machine-badge", m.machine);
+    // The default profile is just the machine's name; any other profile adds its
+    // folder name, so "studio" and "studio/2" can sit on different accounts.
+    const profileName = m.profile === "~/.claude" ? "" : `/${m.profile.split("/").pop()}`;
+    const badge = el(
+      "span",
+      m.running > 0 ? "machine-badge running" : "machine-badge",
+      `${m.machine}${profileName}`,
+    );
     const sessions =
       m.running > 0
         ? `${m.running} Claude session${m.running === 1 ? "" : "s"} running now`
