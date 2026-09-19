@@ -208,3 +208,51 @@ button:disabled {
   margin-top: 3px;
   font-variant-numeric: tabular-nums;
 }
+
+.add {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.add input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.add input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button.link {
+  margin-top: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: underline;
+}
+
+button.link:hover:not(:disabled) {
+  color: var(--critical);
+}
+
+#notice {
+  margin-top: 8px;
+}
+
+#notice:empty {
+  display: none;
+}

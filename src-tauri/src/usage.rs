@@ -133,7 +133,7 @@ mod tests {
     #[ignore]
     fn live_default_account_usage() {
         let oauth = crate::credentials::read_default().expect("default credentials");
-        let result = tauri::async_runtime::block_on(fetch(&oauth.access_token));
+        let result = tauri::async_runtime::block_on(fetch(oauth.access_token()));
         let windows = match result {
             Ok(w) => w,
             Err(UsageError::Unauthorized) => panic!("unauthorized"),

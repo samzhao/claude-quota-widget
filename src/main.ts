@@ -29,6 +29,11 @@ const STATUS_TEXT: Record<AccountUsage["status"], string> = {
 const accountsEl = document.querySelector<HTMLElement>("#accounts")!;
 const updatedEl = document.querySelector<HTMLElement>("#updated")!;
 const refreshBtn = document.querySelector<HTMLButtonElement>("#refresh")!;
+const addForm = document.querySelector<HTMLFormElement>("#add-form")!;
+const emailInput = document.querySelector<HTMLInputElement>("#email")!;
+const addBtn = document.querySelector<HTMLButtonElement>("#add")!;
+const cancelBtn = document.querySelector<HTMLButtonElement>("#cancel")!;
+const noticeEl = document.querySelector<HTMLElement>("#notice")!;
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -97,14 +102,38 @@ function renderAccount(a: AccountUsage): HTMLElement {
   if (a.status === "ok" && a.windows.length === 0) {
     card.append(el("p", "message", "No usage windows reported."));
   }
+
+  if (!a.read_only) {
+    const remove = el("button", "link", "Remove");
+    remove.type = "button";
+    // Two clicks instead of a confirm() dialog, which blocks the webview.
+    remove.addEventListener("click", async () => {
+      if (remove.dataset.armed !== "1") {
+        remove.dataset.armed = "1";
+        remove.textContent = "Click again to remove";
+        setTimeout(() => {
+          remove.dataset.armed = "";
+          remove.textContent = "Remove";
+        }, 3000);
+        return;
+      }
+      try {
+        await invoke("remove_account", { id: a.id });
+        noticeEl.textContent = `Removed ${a.label}.`;
+      } catch (error) {
+        noticeEl.textContent = String(error);
+      }
+      void refresh();
+    });
+    card.append(remove);
+  }
   return card;
 }
 
 async function refresh() {
   refreshBtn.disabled = true;
   try {
-    // Step 3 adds managed accounts; this list grows then.
-    const accounts = [await invoke<AccountUsage>("get_default_account_usage")];
+    const accounts = await invoke<AccountUsage[]>("list_usage");
     accountsEl.replaceChildren(...accounts.map(renderAccount));
     updatedEl.textContent = `updated ${new Date().toLocaleTimeString([], {
       hour: "numeric",
@@ -117,6 +146,31 @@ async function refresh() {
   }
 }
 
+function setLoggingIn(active: boolean) {
+  addBtn.disabled = active;
+  emailInput.disabled = active;
+  cancelBtn.hidden = !active;
+}
+
+addForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setLoggingIn(true);
+  noticeEl.textContent = "Finish the login in your browser. Waiting up to 3 minutes.";
+  try {
+    const label = await invoke<string>("add_account", {
+      emailHint: emailInput.value.trim() || null,
+    });
+    noticeEl.textContent = `Added ${label}.`;
+    emailInput.value = "";
+    await refresh();
+  } catch (error) {
+    noticeEl.textContent = String(error);
+  } finally {
+    setLoggingIn(false);
+  }
+});
+
+cancelBtn.addEventListener("click", () => void invoke("cancel_login"));
 refreshBtn.addEventListener("click", () => void refresh());
 setInterval(() => void refresh(), POLL_MS);
 void refresh();

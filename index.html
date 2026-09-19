@@ -16,5 +16,17 @@
       </div>
     </header>
     <main id="accounts" aria-live="polite"></main>
+    <form id="add-form" class="add">
+      <input
+        id="email"
+        type="email"
+        placeholder="email (optional, pre-fills login)"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button id="add" type="submit">Add account</button>
+      <button id="cancel" type="button" hidden>Cancel</button>
+    </form>
+    <p id="notice" class="message" role="status"></p>
   </body>
 </html>
