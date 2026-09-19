@@ -6,7 +6,15 @@ Claude Code only keeps one login active at a time, so checking how much quota is
 
 | Warm theme | Instrument theme |
 |---|---|
-| ![Grid view, warm theme](docs/screenshots/grid-warm.png) | ![Grid view, instrument theme](docs/screenshots/grid-instrument.png) |
+| ![Grid view, warm theme, dark mode](docs/screenshots/grid-warm-dark.png) | ![Grid view, instrument theme, dark mode](docs/screenshots/grid-instrument-dark.png) |
+
+Both themes follow the system appearance. In light mode:
+
+| Warm theme | Instrument theme |
+|---|---|
+| ![Grid view, warm theme, light mode](docs/screenshots/grid-warm-light.png) | ![Grid view, instrument theme, light mode](docs/screenshots/grid-instrument-light.png) |
+
+The screenshots use made-up accounts.
 
 ## What it does
 

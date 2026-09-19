@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262d39"/><stop offset="1" stop-color="#11141a"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/><stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#sheen)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+  <path d="M321.8 719.3 A258 258 0 0 1 270.3 635.4" fill="none" stroke="#4fb3bf" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M263.4 613.9 A258 258 0 0 1 255.7 515.8" fill="none" stroke="#4fb3bf" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M259.2 493.6 A258 258 0 0 1 296.9 402.6" fill="none" stroke="#4fb3bf" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M310.1 384.4 A258 258 0 0 1 385.0 320.4" fill="none" stroke="#4fb3bf" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M405.0 310.2 A258 258 0 0 1 500.7 287.2" fill="none" stroke="#4fb3bf" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M523.3 287.2 A258 258 0 0 1 619.0 310.2" fill="none" stroke="#4fb3bf" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M639.0 320.4 A258 258 0 0 1 713.9 384.4" fill="none" stroke="#e2a73c" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M727.1 402.6 A258 258 0 0 1 764.8 493.6" fill="none" stroke="#2b323d" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M768.3 515.8 A258 258 0 0 1 760.6 613.9" fill="none" stroke="#2b323d" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <path d="M753.7 635.4 A258 258 0 0 1 702.2 719.3" fill="none" stroke="#2b323d" stroke-width="92" stroke-linecap="butt" opacity="1"/>
+  <line x1="512" y1="545" x2="609.4" y2="430.9" stroke="#e7eaf0" stroke-width="34" stroke-linecap="round"/>
+  <circle cx="512" cy="545" r="46" fill="#e7eaf0"/>
+</svg>
