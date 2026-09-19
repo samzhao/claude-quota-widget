@@ -13,9 +13,11 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "claude-quota-widget",
-        "width": 800,
-        "height": 600
+        "title": "Claude Quota",
+        "width": 380,
+        "height": 520,
+        "minWidth": 300,
+        "minHeight": 200
       }
     ],
     "security": {

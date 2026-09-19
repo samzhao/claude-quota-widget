@@ -1,22 +1,122 @@
 import { invoke } from "@tauri-apps/api/core";
 
-let greetInputEl: HTMLInputElement | null;
-let greetMsgEl: HTMLElement | null;
+type UsageWindow = {
+  key: string;
+  label: string;
+  utilization: number;
+  resets_at: string | null;
+};
 
-async function greet() {
-  if (greetMsgEl && greetInputEl) {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsgEl.textContent = await invoke("greet", {
-      name: greetInputEl.value,
-    });
+type AccountUsage = {
+  id: string;
+  label: string;
+  plan: string | null;
+  read_only: boolean;
+  status: "ok" | "needs_login" | "rate_limited" | "error";
+  message: string | null;
+  windows: UsageWindow[];
+  fetched_at_ms: number;
+};
+
+const POLL_MS = 5 * 60 * 1000;
+const STATUS_TEXT: Record<AccountUsage["status"], string> = {
+  ok: "ok",
+  needs_login: "needs login",
+  rate_limited: "throttled",
+  error: "error",
+};
+
+const accountsEl = document.querySelector<HTMLElement>("#accounts")!;
+const updatedEl = document.querySelector<HTMLElement>("#updated")!;
+const refreshBtn = document.querySelector<HTMLButtonElement>("#refresh")!;
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function resetsIn(iso: string | null): string {
+  if (!iso) return "not started";
+  const ms = new Date(iso).getTime() - Date.now();
+  if (Number.isNaN(ms)) return "";
+  if (ms <= 0) return "resetting";
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 60) return `resets in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `resets in ${hours}h ${minutes % 60}m`;
+  return `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function level(utilization: number): string {
+  if (utilization >= 90) return "critical";
+  if (utilization >= 70) return "warn";
+  return "fine";
+}
+
+function renderWindow(w: UsageWindow): HTMLElement {
+  const row = el("div", "window");
+  const pct = Math.max(0, Math.min(100, w.utilization));
+
+  const head = el("div", "window-head");
+  head.append(el("span", "window-label", w.label));
+  head.append(el("span", "window-pct", `${Math.round(w.utilization)}%`));
+
+  const track = el("div", "track");
+  track.setAttribute("role", "progressbar");
+  track.setAttribute("aria-valuemin", "0");
+  track.setAttribute("aria-valuemax", "100");
+  track.setAttribute("aria-valuenow", String(Math.round(pct)));
+  track.setAttribute("aria-label", `${w.label} usage`);
+  const fill = el("div", `fill ${level(pct)}`);
+  fill.style.width = `${pct}%`;
+  track.append(fill);
+
+  row.append(head, track, el("div", "muted small", resetsIn(w.resets_at)));
+  return row;
+}
+
+function renderAccount(a: AccountUsage): HTMLElement {
+  const card = el("section", "account");
+
+  const head = el("div", "account-head");
+  const title = el("div", "account-title");
+  title.append(el("span", "account-label", a.label));
+  if (a.plan) title.append(el("span", "tag", a.plan));
+  if (a.read_only) title.append(el("span", "tag", "read-only"));
+  head.append(title, el("span", `chip ${a.status}`, STATUS_TEXT[a.status]));
+  card.append(head);
+
+  if (a.message) card.append(el("p", "message", a.message));
+  for (const w of a.windows) card.append(renderWindow(w));
+  if (a.status === "ok" && a.windows.length === 0) {
+    card.append(el("p", "message", "No usage windows reported."));
+  }
+  return card;
+}
+
+async function refresh() {
+  refreshBtn.disabled = true;
+  try {
+    // Step 3 adds managed accounts; this list grows then.
+    const accounts = [await invoke<AccountUsage>("get_default_account_usage")];
+    accountsEl.replaceChildren(...accounts.map(renderAccount));
+    updatedEl.textContent = `updated ${new Date().toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    })}`;
+  } catch (error) {
+    accountsEl.replaceChildren(el("p", "message", `Could not load usage: ${String(error)}`));
+  } finally {
+    refreshBtn.disabled = false;
   }
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-  greetInputEl = document.querySelector("#greet-input");
-  greetMsgEl = document.querySelector("#greet-msg");
-  document.querySelector("#greet-form")?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    greet();
-  });
-});
+refreshBtn.addEventListener("click", () => void refresh());
+setInterval(() => void refresh(), POLL_MS);
+void refresh();
