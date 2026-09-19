@@ -3,6 +3,7 @@ mod cache;
 mod credentials;
 mod keychain;
 mod login;
+mod oauth;
 mod usage;
 
 use accounts::Account;
@@ -107,13 +108,23 @@ fn row_for(target: &Target, cache: &UsageCache) -> AccountUsage {
     }
     if target.usable_oauth().is_none() {
         row.status = AccountStatus::NeedsLogin;
-        row.message = Some(format!("Token expired. {hint}"));
+        let dead = cache.entry(&target.id).is_some_and(|entry| entry.refresh_dead);
+        row.message = Some(if target.read_only || dead {
+            format!("Login expired. {hint}")
+        } else {
+            "Token expired and could not be renewed yet. Will retry.".to_string()
+        });
         return row;
     }
 
     let Some(entry) = cache.entry(&target.id) else {
         return row;
     };
+    if entry.refresh_dead {
+        row.status = AccountStatus::NeedsLogin;
+        row.message = Some(format!("Login expired. {hint}"));
+        return row;
+    }
     row.windows = entry.windows.clone();
     row.as_of_ms = (entry.fetched_at_ms > 0.0).then_some(entry.fetched_at_ms);
     row.next_check_ms = Some(entry.next_check_ms());
@@ -171,6 +182,38 @@ async fn list_usage(
     let ids: Vec<String> = targets.iter().map(|t| t.id.clone()).collect();
     cache.retain_ids(&ids);
 
+    // Renew managed logins that are about to expire. Never the read-only
+    // default: Claude Code owns that grant. Runs under the cache lock, so two
+    // overlapping calls cannot both spend the same single-use refresh token.
+    let mut renewed_any = false;
+    for target in targets.iter_mut().filter(|t| !t.read_only) {
+        let Some(oauth) = target.oauth.clone() else { continue };
+        let now = now_ms();
+        if !oauth.expires_within(now, oauth::EXPIRY_BUFFER_MS) {
+            continue;
+        }
+        let entry = cache.entry_mut(&target.id);
+        if entry.refresh_dead || now < entry.refresh_retry_at_ms {
+            continue;
+        }
+        match oauth::refresh(&oauth, now).await {
+            Ok(renewed) => {
+                // Persist before use: losing a rotated refresh token logs the account out.
+                if let Err(error) = credentials::write_managed(&target.id, &renewed) {
+                    eprintln!("[oauth] could not store renewed login for {}: {error}", target.label);
+                }
+                entry.refresh_retry_at_ms = 0.0;
+                target.oauth = Some(renewed);
+            }
+            Err(oauth::RefreshError::Dead) => entry.refresh_dead = true,
+            Err(oauth::RefreshError::Transient(reason)) => {
+                eprintln!("[oauth] renew failed for {}: {reason}", target.label);
+                entry.refresh_retry_at_ms = now + 2.0 * 60_000.0;
+            }
+        }
+        renewed_any = true;
+    }
+
     // Only accounts whose reading is due touch the network; they go in parallel.
     let now = now_ms();
     let mut fetches = Vec::new();
@@ -192,7 +235,7 @@ async fn list_usage(
         let (id, result) = fetch.await.map_err(|e| e.to_string())?;
         cache.entry_mut(&id).record(result, now_ms());
     }
-    if fetched_any {
+    if fetched_any || renewed_any {
         cache.save();
     }
 

@@ -39,6 +39,51 @@ impl Oauth {
         self.expires_at().is_some_and(|at| at <= now_ms)
     }
 
+    pub fn refresh_token(&self) -> Option<&str> {
+        self.0
+            .get("refreshToken")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+    }
+
+    /// True when the access token is expired or will be within `buffer_ms`.
+    /// No usable expiry counts as expiring, so it gets refreshed rather than
+    /// trusted forever.
+    pub fn expires_within(&self, now_ms: f64, buffer_ms: f64) -> bool {
+        self.expires_at().is_none_or(|at| now_ms + buffer_ms >= at)
+    }
+
+    /// Merges a token endpoint response into a copy of these credentials.
+    /// Refresh tokens can be single-use, so a rotated one must replace the old
+    /// one; when the server sends none, the existing one stays valid.
+    pub fn with_refresh_response(&self, response: &Value, now_ms: f64) -> Option<Self> {
+        let access_token = response
+            .get("access_token")
+            .and_then(Value::as_str)
+            .filter(|token| !token.trim().is_empty())?;
+        let mut next = self.0.clone();
+        let fields = next.as_object_mut()?;
+        fields.insert("accessToken".into(), Value::from(access_token));
+        if let Some(seconds) = response.get("expires_in").and_then(Value::as_f64) {
+            fields.insert("expiresAt".into(), Value::from(now_ms + seconds * 1000.0));
+        }
+        if let Some(rotated) = response
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .filter(|token| !token.trim().is_empty())
+        {
+            fields.insert("refreshToken".into(), Value::from(rotated));
+        }
+        if let Some(scope) = response.get("scope").and_then(Value::as_str) {
+            let scopes: Vec<Value> = scope.split_whitespace().map(Value::from).collect();
+            if !scopes.is_empty() {
+                fields.insert("scopes".into(), Value::from(scopes));
+            }
+        }
+        Some(Self(next))
+    }
+
     fn to_credentials_json(&self) -> String {
         serde_json::json!({ "claudeAiOauth": self.0 }).to_string()
     }
@@ -122,6 +167,43 @@ pub fn delete_managed(account_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample() -> Oauth {
+        Oauth::from_credentials_json(
+            r#"{"claudeAiOauth":{"accessToken":"old-access","refreshToken":"old-refresh","expiresAt":1000000,"subscriptionType":"max","scopes":["a"]}}"#,
+        )
+        .expect("parse")
+    }
+
+    #[test]
+    fn refresh_response_rotates_tokens_and_keeps_everything_else() {
+        let response = serde_json::json!({
+            "access_token": "new-access", "refresh_token": "new-refresh",
+            "expires_in": 28800, "scope": "a b"
+        });
+        let next = sample().with_refresh_response(&response, 2_000_000.0).expect("merge");
+        assert_eq!(next.access_token(), "new-access");
+        assert_eq!(next.refresh_token(), Some("new-refresh"));
+        assert_eq!(next.expires_at(), Some(2_000_000.0 + 28_800_000.0));
+        assert_eq!(next.plan().as_deref(), Some("max"));
+        assert_eq!(next.0["scopes"], serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn refresh_response_without_rotation_keeps_the_old_refresh_token() {
+        let response = serde_json::json!({ "access_token": "new-access", "expires_in": 60 });
+        let next = sample().with_refresh_response(&response, 0.0).expect("merge");
+        assert_eq!(next.refresh_token(), Some("old-refresh"));
+        assert!(sample().with_refresh_response(&serde_json::json!({}), 0.0).is_none());
+    }
+
+    #[test]
+    fn expiring_soon_counts_as_expiring() {
+        let oauth = sample(); // expires at 1_000_000
+        assert!(!oauth.expires_within(0.0, 300_000.0));
+        assert!(oauth.expires_within(700_000.0, 300_000.0));
+        assert!(oauth.expires_within(1_500_000.0, 300_000.0));
+    }
 
     /// Touches the real login keychain with a dummy item, so opt-in only.
     /// Run with: cargo test -- --ignored

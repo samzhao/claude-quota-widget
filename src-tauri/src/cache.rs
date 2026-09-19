@@ -35,6 +35,12 @@ pub struct Entry {
     pub backoff_until_ms: f64,
     pub failures: u32,
     pub problem: Option<Problem>,
+    /// Refresh token was rejected; only a new login fixes it, so stop trying.
+    #[serde(default)]
+    pub refresh_dead: bool,
+    /// No token refresh attempt before this (after a transient failure).
+    #[serde(default)]
+    pub refresh_retry_at_ms: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
