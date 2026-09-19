@@ -9,7 +9,8 @@ use std::{
 };
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, PhysicalPosition, Rect, State, WebviewWindow, Window, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Rect, State, WebviewWindow, Window,
+    WindowEvent,
 };
 
 const TRAY_ID: &str = "main";
@@ -18,6 +19,11 @@ const GAP_BELOW_MENUBAR: f64 = 6.0;
 /// Clicking the menubar item while the dropdown is open blurs it first. Without
 /// this grace window the click would hide it and immediately show it again.
 const REOPEN_GRACE_MS: f64 = 350.0;
+/// Breathing room kept between the window and the edges of the screen it is on.
+const SCREEN_MARGIN: f64 = 16.0;
+const MIN_HEIGHT: f64 = 200.0;
+const MIN_WIDTH: f64 = 320.0;
+const PERSIST_EVERY_MS: f64 = 400.0;
 
 #[derive(Default)]
 pub struct Ui {
@@ -25,6 +31,11 @@ pub struct Ui {
     /// Opened from the menubar item, so it should vanish on click-away.
     transient: bool,
     hidden_by_blur_at_ms: f64,
+    /// Natural height of the page content, as last reported by the frontend.
+    content_height: f64,
+    /// The size we last asked for, so our own resizes are not mistaken for the user's.
+    expected_size: Option<(f64, f64)>,
+    unsaved_since_ms: f64,
 }
 
 #[derive(Default)]
@@ -85,6 +96,85 @@ fn place_under(app: &AppHandle, window: &WebviewWindow, icon: &Rect) {
     let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
 
+/// Sizes the window: height follows the content unless the user picked one by
+/// hand, and either way never taller than the screen the window is on.
+/// `may_move` lifts the window when it would run off the bottom; it is off
+/// while the user is dragging, so the window does not fight the drag.
+fn fit_window(window: &WebviewWindow, ui: &mut Ui, may_move: bool) {
+    let wanted = ui.settings.manual_height.unwrap_or(ui.content_height);
+    if wanted <= 0.0 {
+        return; // the page has not reported its height yet
+    }
+    let Ok(Some(monitor)) = window.current_monitor() else { return };
+    let scale = monitor.scale_factor();
+    let work = monitor.work_area();
+    let tallest = (work.size.height as f64 / scale - 2.0 * SCREEN_MARGIN).max(MIN_HEIGHT);
+    let height = wanted.clamp(MIN_HEIGHT, tallest).round();
+    let width = ui.settings.width.max(MIN_WIDTH).round();
+
+    let current = window
+        .outer_size()
+        .map(|size| (size.width as f64 / scale, size.height as f64 / scale))
+        .unwrap_or((0.0, 0.0));
+    if (current.0 - width).abs() > 1.0 || (current.1 - height).abs() > 1.0 {
+        ui.expected_size = Some((width, height));
+        let _ = window.set_size(LogicalSize::new(width, height));
+    }
+
+    if may_move {
+        if let Ok(position) = window.outer_position() {
+            let bottom_limit =
+                work.position.y as f64 + work.size.height as f64 - SCREEN_MARGIN * scale;
+            let overflow = position.y as f64 + height * scale - bottom_limit;
+            if overflow > 0.0 {
+                let lifted = (position.y as f64 - overflow).max(work.position.y as f64);
+                let _ = window.set_position(PhysicalPosition::new(position.x, lifted.round() as i32));
+            }
+        }
+    }
+}
+
+/// A resize we did not ask for is the user dragging an edge: remember it.
+fn on_resized(window: &Window, physical: (u32, u32)) {
+    let app = window.app_handle();
+    let state = app.state::<UiState>();
+    // try_lock, not lock: if our own sizing code holds the state, this resize
+    // is its doing and blocking here would deadlock the main thread.
+    let Ok(mut ui) = state.0.try_lock() else { return };
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let (width, height) = (physical.0 as f64 / scale, physical.1 as f64 / scale);
+    let close = |a: f64, b: f64| (a - b).abs() <= 2.0;
+    if ui.expected_size.is_some_and(|(w, h)| close(w, width) && close(h, height)) {
+        return;
+    }
+    // Moving between screens with different scale factors also lands here with
+    // the same logical size; that is not a resize either.
+    let shown_height = ui.settings.manual_height.unwrap_or(ui.content_height);
+    let height_changed = !close(shown_height.max(MIN_HEIGHT), height)
+        && !ui.expected_size.is_some_and(|(_, h)| close(h, height));
+    let width_changed = !close(ui.settings.width, width);
+    if !height_changed && !width_changed {
+        return;
+    }
+    ui.settings.width = width;
+    if height_changed {
+        ui.settings.manual_height = Some(height);
+    }
+    ui.expected_size = Some((width, height));
+    let settings = ui.settings;
+    let now = now_ms();
+    let save_now = now - ui.unsaved_since_ms > PERSIST_EVERY_MS;
+    ui.unsaved_since_ms = now;
+    drop(ui);
+    if save_now {
+        let _ = persist(app, &settings);
+    }
+    let _ = app.emit("settings-changed", settings);
+}
+
 fn on_tray_click(app: &AppHandle, icon: &Rect) {
     let Some(window) = main_window(app) else { return };
     let state = app.state::<UiState>();
@@ -103,6 +193,8 @@ fn on_tray_click(app: &AppHandle, icon: &Rect) {
         place_under(app, &window, icon);
         ui.transient = true;
     }
+    // It may be opening on a different, shorter screen than last time.
+    fit_window(&window, &mut ui, true);
     drop(ui);
     show_window(&window);
 }
@@ -117,9 +209,12 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             api.prevent_close();
             let _ = window.hide();
         }
+        WindowEvent::Resized(size) => on_resized(window, (size.width, size.height)),
         WindowEvent::Focused(false) => {
             let state = window.state::<UiState>();
-            let Ok(mut ui) = state.0.lock() else { return };
+            let Ok(mut ui) = state.0.try_lock() else { return };
+            // Resize events are saved at most every 400ms; catch the last one here.
+            let _ = persist(window.app_handle(), &ui.settings);
             if ui.transient && !ui.settings.pinned {
                 ui.transient = false;
                 ui.hidden_by_blur_at_ms = now_ms();
@@ -131,8 +226,13 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             // Programmatic placement also fires Moved, right before show(), when
             // the window is still hidden; only a visible window is a user drag.
             if window.is_visible().unwrap_or(false) {
-                if let Ok(mut ui) = window.state::<UiState>().0.lock() {
+                if let Ok(mut ui) = window.state::<UiState>().0.try_lock() {
                     ui.transient = false;
+                    // Dragged onto a shorter screen: shrink to fit, but never
+                    // reposition mid-drag.
+                    if let Some(webview) = window.app_handle().get_webview_window(WINDOW) {
+                        fit_window(&webview, &mut ui, false);
+                    }
                 }
             }
         }
@@ -190,6 +290,31 @@ fn persist(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     settings::save(&dir, settings)
 }
 
+/// The page tells us how tall its content naturally is, every time that changes.
+#[tauri::command]
+pub fn content_height(app: AppHandle, ui: State<'_, UiState>, height: f64) {
+    let Ok(mut ui) = ui.0.lock() else { return };
+    ui.content_height = height;
+    if let Some(window) = main_window(&app) {
+        fit_window(&window, &mut ui, true);
+    }
+}
+
+/// Back to automatic height after a manual resize.
+#[tauri::command]
+pub fn fit_to_content(app: AppHandle, ui: State<'_, UiState>) -> Result<Settings, String> {
+    let settings = {
+        let mut ui = ui.0.lock().map_err(|e| e.to_string())?;
+        ui.settings.manual_height = None;
+        if let Some(window) = main_window(&app) {
+            fit_window(&window, &mut ui, true);
+        }
+        ui.settings
+    };
+    persist(&app, &settings)?;
+    Ok(settings)
+}
+
 #[tauri::command]
 pub fn hide_window(app: AppHandle, ui: State<'_, UiState>) {
     if let Ok(mut ui) = ui.0.lock() {
@@ -201,7 +326,10 @@ pub fn hide_window(app: AppHandle, ui: State<'_, UiState>) {
 }
 
 #[tauri::command]
-pub fn quit_app(app: AppHandle) {
+pub fn quit_app(app: AppHandle, ui: State<'_, UiState>) {
+    if let Ok(ui) = ui.0.lock() {
+        let _ = persist(&app, &ui.settings);
+    }
     app.exit(0);
 }
 

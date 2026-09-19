@@ -692,3 +692,19 @@ header {
 header button {
   cursor: default;
 }
+
+/* #content has the page's natural height; the window is sized to match it. */
+#content {
+  display: flow-root;
+}
+
+h1 {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+h1 img {
+  display: block;
+  pointer-events: none;
+}

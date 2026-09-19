@@ -9,8 +9,12 @@
   </head>
   <body>
     <div id="app">
+    <div id="content">
     <header data-tauri-drag-region>
-      <h1 data-tauri-drag-region>Claude Quota</h1>
+      <h1 data-tauri-drag-region>
+        <img src="/src/assets/logo.svg" alt="" width="20" height="20" data-tauri-drag-region />
+        Claude Quota
+      </h1>
       <div class="header-actions">
         <div class="segmented" role="group" aria-label="View">
           <button id="view-grid" type="button" aria-pressed="true">Grid</button>
@@ -65,10 +69,12 @@
       </div>
       <div class="footer-meta">
         <p id="updated" class="muted"></p>
+        <button id="fit" type="button" class="link" hidden title="You resized the window by hand. This goes back to fitting the content.">Fit to content</button>
         <button id="quit" type="button" class="link">Quit Claude Quota</button>
       </div>
       <p id="notice" class="message" role="status"></p>
     </footer>
+    </div>
     </div>
   </body>
 </html>

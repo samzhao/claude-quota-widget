@@ -6,13 +6,30 @@ use std::{fs, path::Path};
 
 const FILE_NAME: &str = "settings.json";
 
-#[derive(Serialize, Deserialize, Clone, Copy, Default, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     /// Window floats above everything, on every Space.
     pub pinned: bool,
     /// Off by default: the app lives in the menubar.
     pub show_dock_icon: bool,
+    /// Logical pixels. Always remembered.
+    pub width: f64,
+    /// Set once the user resizes the window by hand. None = height follows content.
+    pub manual_height: Option<f64>,
+}
+
+pub const DEFAULT_WIDTH: f64 = 470.0;
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            pinned: false,
+            show_dock_icon: false,
+            width: DEFAULT_WIDTH,
+            manual_height: None,
+        }
+    }
 }
 
 pub fn load(data_dir: &Path) -> Settings {

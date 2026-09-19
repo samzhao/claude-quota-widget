@@ -23,7 +23,12 @@ type AccountUsage = {
 
 type View = "grid" | "cards";
 type Theme = "warm" | "instrument";
-type AppSettings = { pinned: boolean; show_dock_icon: boolean };
+type AppSettings = {
+  pinned: boolean;
+  show_dock_icon: boolean;
+  width: number;
+  manual_height: number | null;
+};
 type Level = "normal" | "warning" | "critical";
 
 const GAUGE_CELLS = 10;
@@ -59,6 +64,7 @@ const compactInput = $<HTMLInputElement>("#compact");
 const compactWrap = $("#compact-wrap");
 const pinBtn = $<HTMLButtonElement>("#pin");
 const dockInput = $<HTMLInputElement>("#dock-icon");
+const fitBtn = $<HTMLButtonElement>("#fit");
 const noticeEl = $("#notice");
 
 // Per-viewer conveniences only; the app works the same if storage is unavailable.
@@ -436,6 +442,32 @@ function applyAppSettings(settings: AppSettings) {
     ? "Pinned: stays on top, on every Space. Click to unpin."
     : "Pin on top of other windows, on every Space";
   dockInput.checked = settings.show_dock_icon;
+  fitBtn.hidden = settings.manual_height === null;
+}
+
+/**
+ * The window's height follows the content. Report the natural height whenever
+ * it changes (accounts added, view or theme switched, width reflow); the Rust
+ * side caps it to the screen and ignores it after a manual resize.
+ */
+function watchContentHeight() {
+  const app = $("#app");
+  const content = $("#content");
+  let last = 0;
+  const report = () => {
+    const style = getComputedStyle(app);
+    const chrome =
+      parseFloat(style.paddingTop) +
+      parseFloat(style.paddingBottom) +
+      parseFloat(style.borderTopWidth) +
+      parseFloat(style.borderBottomWidth);
+    const height = Math.ceil(content.getBoundingClientRect().height + chrome);
+    if (height === last) return;
+    last = height;
+    void invoke("content_height", { height }).catch(() => {});
+  };
+  new ResizeObserver(report).observe(content);
+  report();
 }
 
 function setView(next: View) {
@@ -498,6 +530,12 @@ pinBtn.addEventListener("click", async () => {
   const pinned = pinBtn.getAttribute("aria-pressed") !== "true";
   applyAppSettings(await invoke<AppSettings>("set_pinned", { pinned }));
 });
+fitBtn.addEventListener("click", async () => {
+  applyAppSettings(await invoke<AppSettings>("fit_to_content"));
+});
+void listen<AppSettings>("settings-changed", (event) => applyAppSettings(event.payload)).catch(
+  () => {},
+);
 dockInput.addEventListener("change", async () => {
   applyAppSettings(await invoke<AppSettings>("set_show_dock_icon", { show: dockInput.checked }));
 });
@@ -521,4 +559,5 @@ setInterval(render, 60 * 1000);
 
 applyTheme();
 render();
+watchContentHeight();
 void refresh();

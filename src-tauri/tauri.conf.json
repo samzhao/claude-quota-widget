@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "claude-quota-widget",
+  "productName": "Claude Quota",
   "version": "0.1.0",
   "identifier": "com.samzhao.claude-quota-widget",
   "build": {

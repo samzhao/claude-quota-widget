@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="" width="96" height="96" align="right" />
+
 # Claude Quota
 
 A small macOS (Tauri) app that shows the usage limits of multiple Claude accounts at once.
