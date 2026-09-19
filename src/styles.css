@@ -643,3 +643,7 @@ p#updated:empty {
   border-color: var(--ink);
   color: var(--bg);
 }
+
+.footer-meta p#updated {
+  margin: 0;
+}

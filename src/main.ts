@@ -508,7 +508,7 @@ void listen<AccountUsage[]>("usage-updated", (event) => {
   lastAccounts = event.payload;
   render();
 }).catch(() => {});
-void listen("refresh-requested", () => void refresh(true)).catch(() => {});
+$<HTMLButtonElement>("#quit").addEventListener("click", () => void invoke("quit_app"));
 void invoke<AppSettings | null>("get_settings")
   .then((settings) => settings && applyAppSettings(settings))
   .catch(() => {});

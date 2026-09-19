@@ -8,9 +8,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow, Window, WindowEvent,
+    tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, PhysicalPosition, Rect, State, WebviewWindow, Window, WindowEvent,
 };
 
 const TRAY_ID: &str = "main";
@@ -108,15 +107,6 @@ fn on_tray_click(app: &AppHandle, icon: &Rect) {
     show_window(&window);
 }
 
-fn open_as_normal_window(app: &AppHandle) {
-    if let Some(window) = main_window(app) {
-        if let Ok(mut ui) = app.state::<UiState>().0.lock() {
-            ui.transient = false;
-        }
-        show_window(&window);
-    }
-}
-
 pub fn on_window_event(window: &Window, event: &WindowEvent) {
     if window.label() != WINDOW {
         return;
@@ -172,34 +162,17 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
         apply_pinned(&window, loaded.pinned);
     }
 
-    let open = MenuItem::with_id(app, "open", "Open Claude Quota", true, None::<&str>)?;
-    let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Claude Quota", true, Some("Cmd+Q"))?;
-    let menu = Menu::with_items(
-        app,
-        &[&open, &refresh, &PredefinedMenuItem::separator(app)?, &quit],
-    )?;
-
     let placeholder = tray::summarize(&[]);
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(tray::gauge_icon(placeholder.percent, placeholder.level))
         .icon_as_template(true)
         .title(&placeholder.title)
         .tooltip(&placeholder.tooltip)
-        .menu(&menu)
-        // Left click drops the window down; the menu is on right click.
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "open" => open_as_normal_window(app),
-            "refresh" => {
-                let _ = app.emit("refresh-requested", ());
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        })
+        // Deliberately no menu. A menu attached to the status item is opened by
+        // macOS itself, before (or instead of) our click handler, so the click
+        // could never reliably open the app. Quit lives in the window.
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
-                button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 rect,
                 ..
@@ -215,6 +188,11 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
 fn persist(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     settings::save(&dir, settings)
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
