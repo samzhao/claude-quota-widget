@@ -319,6 +319,23 @@ function describeFreshness(accounts: AccountUsage[]): string {
   return parts.join(", ");
 }
 
+/**
+ * Wake up when the cache says the soonest account is due (for example right
+ * after a Retry-After window closes) instead of on a fixed beat.
+ */
+let nextCheckTimer: number | undefined;
+function scheduleNextCheck() {
+  const due = lastAccounts
+    .map((a) => a.next_check_ms)
+    .filter((ms): ms is number => ms !== null);
+  const wait = due.length > 0 ? Math.min(...due) - Date.now() + 2000 : POLL_MS;
+  window.clearTimeout(nextCheckTimer);
+  nextCheckTimer = window.setTimeout(
+    () => void refresh(),
+    Math.max(30 * 1000, Math.min(wait, 15 * 60 * 1000)),
+  );
+}
+
 async function refresh(force = false) {
   refreshBtn.disabled = true;
   try {
@@ -330,6 +347,7 @@ async function refresh(force = false) {
     accountsEl.replaceChildren(el("p", "message", `Could not load usage: ${String(error)}`));
   } finally {
     refreshBtn.disabled = false;
+    scheduleNextCheck();
   }
 }
 
@@ -384,7 +402,7 @@ themeSelect.addEventListener("change", () => {
   saveSetting("theme", theme);
   applyTheme();
 });
-setInterval(() => void refresh(), POLL_MS);
+scheduleNextCheck();
 // Countdown text goes stale between polls; repaint it without refetching.
 setInterval(render, 60 * 1000);
 
