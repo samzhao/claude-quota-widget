@@ -138,12 +138,23 @@ button:disabled {
 }
 
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   border-radius: 999px;
   padding: 1px 8px;
   flex-shrink: 0;
   color: var(--fine);
   background: color-mix(in srgb, var(--fine) 14%, transparent);
+}
+
+.chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .chip.needs_login,

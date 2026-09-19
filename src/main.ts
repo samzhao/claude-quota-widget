@@ -19,11 +19,18 @@ type AccountUsage = {
 };
 
 const POLL_MS = 5 * 60 * 1000;
+// The chip answers one question: is this account's login still working?
 const STATUS_TEXT: Record<AccountUsage["status"], string> = {
-  ok: "ok",
+  ok: "connected",
   needs_login: "needs login",
   rate_limited: "throttled",
   error: "error",
+};
+const STATUS_HELP: Record<AccountUsage["status"], string> = {
+  ok: "Login is valid and usage numbers are live.",
+  needs_login: "The stored login no longer works, so usage can't be fetched.",
+  rate_limited: "Anthropic is throttling usage checks. Numbers may be stale.",
+  error: "The last usage check failed. Numbers may be stale.",
 };
 
 const accountsEl = document.querySelector<HTMLElement>("#accounts")!;
@@ -94,7 +101,9 @@ function renderAccount(a: AccountUsage): HTMLElement {
   title.append(el("span", "account-label", a.label));
   if (a.plan) title.append(el("span", "tag", a.plan));
   if (a.read_only) title.append(el("span", "tag", "read-only"));
-  head.append(title, el("span", `chip ${a.status}`, STATUS_TEXT[a.status]));
+  const chip = el("span", `chip ${a.status}`, STATUS_TEXT[a.status]);
+  chip.title = STATUS_HELP[a.status];
+  head.append(title, chip);
   card.append(head);
 
   if (a.message) card.append(el("p", "message", a.message));
