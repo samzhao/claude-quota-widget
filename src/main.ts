@@ -94,9 +94,16 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-/** A limit nobody has touched yet: 0% and no reset clock running. */
+/**
+ * Extra limits the endpoint lists but this plan never uses: 0% with no reset
+ * clock. The core limits are never hidden, because an idle 5-hour window
+ * looks exactly the same (0%, no reset) until the next message starts it.
+ */
+function isCoreLimit(w: UsageWindow): boolean {
+  return w.key === "session" || w.key === "weekly_all" || w.key.startsWith("weekly_scoped:");
+}
 function isUnused(w: UsageWindow): boolean {
-  return w.utilization === 0 && !w.resets_at;
+  return !isCoreLimit(w) && w.utilization === 0 && !w.resets_at;
 }
 
 function timeLeft(iso: string | null): string | null {
