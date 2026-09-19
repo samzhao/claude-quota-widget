@@ -39,12 +39,22 @@ The app lives in the menubar: click the gauge to open it, press Esc to hide it.
 - Shows when each limit resets, how old each reading is, and a badge when a check failed and why.
 - Shows the default authed Claude Code already as a read-only row.
 - Renews its own logins before they expire, so accounts stay connected.
+- Lets you put a free-text label on any account, for example which computer uses it.
+- Optionally checks your other computers over SSH and marks which account each one is signed in to, and whether Claude sessions are running there right now.
 
 ## How it works
 
 - **Logins** are made by the official Claude Code CLI. The app copies the resulting tokens into its own macOS keychain entries (service name `Claude Quota Widget`) and deletes the temporary folder and keychain item the CLI created. Tokens stay in the keychain and in the Rust process. The web UI only ever receives labels and percentages.
 - **Claude Code's own login is never modified.** The app reads it to show the read-only row. It never writes, renews or deletes it.
 - **Usage numbers** come from Anthropic's OAuth usage endpoint, called with each account's own login. That endpoint throttles quickly, so readings are cached on disk and reused for 5 minutes, `Retry-After` is honored, and repeated throttling backs off for up to 30 minutes. The last good reading stays on screen in the meantime.
+
+## Other machines (optional)
+
+Open **Machines** at the bottom of the window and add a name plus an SSH destination (`user@host` or an alias from `~/.ssh/config`). Every 10 minutes, and when you press Refresh, the app runs `claude auth status --json` on that machine and looks at its running `claude` processes. Accounts it recognises get a badge with the machine's name: a hollow dot means signed in there, a filled dot means sessions are running there now.
+
+- It uses the SSH keys and agent you already have, in batch mode, so it never prompts and never tries a password. If a host is not trusted yet, it tells you the command to run once.
+- It only reads. The only things that come back are email addresses and a process count. No tokens leave the other machine.
+- It looks at `~/.claude`, `~/claude-*` and `~/.claude-profiles/*`. Nothing runs over SSH until you add a machine.
 
 ## Requirements
 

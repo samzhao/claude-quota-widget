@@ -36,6 +36,7 @@
         <button id="add" type="submit">Add account</button>
         <button id="cancel" type="button" hidden>Cancel</button>
         <button id="email-toggle" type="button" class="link">Pre-fill an email</button>
+        <button id="machines-toggle" type="button" class="link">Machines</button>
         <input
           id="email"
           type="email"
@@ -46,6 +47,19 @@
           hidden
         />
       </form>
+      <section id="machines-panel" class="machines" hidden>
+        <p class="message">
+          See which account your other computers are signed in to. The app runs
+          <code>claude auth status</code> on each one over SSH, using the keys you already have.
+        </p>
+        <div id="machines-list"></div>
+        <form id="machine-form" class="machine-form">
+          <input id="machine-name" type="text" placeholder="name, e.g. studio" maxlength="24" aria-label="Machine name" autocomplete="off" spellcheck="false" />
+          <input id="machine-ssh" type="text" placeholder="user@host or ssh alias" maxlength="128" aria-label="SSH destination" autocomplete="off" spellcheck="false" />
+          <button type="submit">Add machine</button>
+        </form>
+        <p id="machine-notice" class="message problem" role="status"></p>
+      </section>
       <div class="footer-meta">
         <label class="check">
           <input id="hide-unused" type="checkbox" />

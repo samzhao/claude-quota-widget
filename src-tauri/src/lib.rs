@@ -4,6 +4,7 @@ mod credentials;
 mod keychain;
 mod labels;
 mod login;
+mod machines;
 mod oauth;
 mod settings;
 mod shell;
@@ -15,6 +16,7 @@ use cache::{Decision, Problem, UsageCache};
 use credentials::Oauth;
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -41,6 +43,8 @@ struct AccountUsage {
     label: String,
     /// Free text the user attached to this account, if any.
     tag: Option<String>,
+    /// Other machines found signed in to this account (see `machines.rs`).
+    machines: Vec<MachineBadge>,
     plan: Option<String>,
     read_only: bool,
     status: AccountStatus,
@@ -50,6 +54,31 @@ struct AccountUsage {
     as_of_ms: Option<f64>,
     /// Earliest time an automatic check will hit the network again.
     next_check_ms: Option<f64>,
+}
+
+#[derive(Serialize, Clone)]
+struct MachineBadge {
+    machine: String,
+    profile: String,
+    /// `claude` sessions running there right now under this account.
+    running: u32,
+}
+
+/// What the Machines list in the window shows for one machine.
+#[derive(Serialize, Clone)]
+struct MachineStatus {
+    name: String,
+    ssh: String,
+    sightings: Vec<machines::Sighting>,
+    problem: Option<String>,
+    checked_at_ms: Option<f64>,
+}
+
+#[derive(Default)]
+struct MachineState {
+    reports: tokio::sync::Mutex<HashMap<String, machines::Report>>,
+    /// Pinged when machines are added or Refresh is pressed.
+    wake: tokio::sync::Notify,
 }
 
 /// Async mutex on purpose: it is held across the fetches so two overlapping
@@ -93,11 +122,21 @@ impl Target {
     }
 }
 
-fn row_for(target: &Target, cache: &UsageCache, labels: &labels::Labels) -> AccountUsage {
+fn row_for(
+    target: &Target,
+    cache: &UsageCache,
+    labels: &labels::Labels,
+    seen_on: &HashMap<String, Vec<MachineBadge>>,
+) -> AccountUsage {
     let mut row = AccountUsage {
         id: target.id.clone(),
         label: target.label.clone(),
         tag: labels.get(&target.id).cloned(),
+        // Accounts are matched to machines by email, which is what the label is.
+        machines: seen_on
+            .get(&target.label.to_lowercase())
+            .cloned()
+            .unwrap_or_default(),
         plan: target.oauth.as_ref().and_then(Oauth::plan),
         read_only: target.read_only,
         status: AccountStatus::Ok,
@@ -244,9 +283,25 @@ async fn collect_usage(app: &AppHandle, force: bool) -> Result<Vec<AccountUsage>
     }
 
     let labels = labels::load(&data_dir(app)?);
+    let mut seen_on: HashMap<String, Vec<MachineBadge>> = HashMap::new();
+    {
+        let machine_state = app.state::<MachineState>();
+        let reports = machine_state.reports.lock().await;
+        let mut names: Vec<&String> = reports.keys().collect();
+        names.sort();
+        for name in names {
+            for sighting in &reports[name].sightings {
+                seen_on.entry(sighting.email.clone()).or_default().push(MachineBadge {
+                    machine: name.clone(),
+                    profile: sighting.profile.clone(),
+                    running: sighting.running,
+                });
+            }
+        }
+    }
     Ok(targets
         .iter()
-        .map(|target| row_for(target, &cache, &labels))
+        .map(|target| row_for(target, &cache, &labels, &seen_on))
         .collect())
 }
 
@@ -267,6 +322,10 @@ fn publish(app: &AppHandle, rows: &[AccountUsage]) {
 
 #[tauri::command]
 async fn list_usage(app: AppHandle, force: Option<bool>) -> Result<Vec<AccountUsage>, String> {
+    if force.unwrap_or(false) {
+        // The Refresh button also re-checks the other machines.
+        app.state::<MachineState>().wake.notify_one();
+    }
     let rows = collect_usage(&app, force.unwrap_or(false)).await?;
     publish(&app, &rows);
     Ok(rows)
@@ -350,6 +409,103 @@ async fn add_account(
     Ok(label)
 }
 
+async fn machine_statuses(app: &AppHandle) -> Result<Vec<MachineStatus>, String> {
+    let list = machines::load(&data_dir(app)?);
+    let machine_state = app.state::<MachineState>();
+    let reports = machine_state.reports.lock().await;
+    Ok(list
+        .into_iter()
+        .map(|machine| {
+            let report = reports.get(&machine.name);
+            MachineStatus {
+                sightings: report.map(|r| r.sightings.clone()).unwrap_or_default(),
+                problem: report.and_then(|r| r.problem.clone()),
+                checked_at_ms: report.map(|r| r.checked_at_ms),
+                name: machine.name,
+                ssh: machine.ssh,
+            }
+        })
+        .collect())
+}
+
+/// Asks every configured machine which accounts it is signed in to. Idle (no
+/// SSH at all) until a machine is added. Checks run in parallel, every 10
+/// minutes, or right away when woken by Refresh or a newly added machine.
+async fn run_machine_checks(app: AppHandle) {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    loop {
+        let list = data_dir(&app).map(|dir| machines::load(&dir)).unwrap_or_default();
+        if !list.is_empty() {
+            let probes: Vec<_> = list
+                .iter()
+                .cloned()
+                .map(|machine| {
+                    tauri::async_runtime::spawn(async move {
+                        let result = machines::probe(&machine).await;
+                        (machine.name, result)
+                    })
+                })
+                .collect();
+            let mut fresh = HashMap::new();
+            for probe in probes {
+                if let Ok((name, result)) = probe.await {
+                    let mut report = machines::Report { checked_at_ms: now_ms(), ..Default::default() };
+                    match result {
+                        Ok(sightings) => report.sightings = sightings,
+                        Err(problem) => report.problem = Some(problem),
+                    }
+                    fresh.insert(name, report);
+                }
+            }
+            {
+                let machine_state = app.state::<MachineState>();
+                let mut reports = machine_state.reports.lock().await;
+                // A machine that cannot be reached right now keeps its last sightings
+                // off screen: stale "in use" badges would be worse than none.
+                *reports = fresh;
+            }
+            if let Ok(statuses) = machine_statuses(&app).await {
+                let _ = app.emit("machines-updated", statuses);
+            }
+            if let Ok(rows) = collect_usage(&app, false).await {
+                publish(&app, &rows);
+            }
+        }
+        let machine_state = app.state::<MachineState>();
+        tokio::select! {
+            _ = machine_state.wake.notified() => {}
+            _ = tokio::time::sleep(EVERY) => {}
+        }
+    }
+}
+
+#[tauri::command]
+async fn list_machines(app: AppHandle) -> Result<Vec<MachineStatus>, String> {
+    machine_statuses(&app).await
+}
+
+#[tauri::command]
+async fn add_machine(app: AppHandle, name: String, ssh: String) -> Result<Vec<MachineStatus>, String> {
+    let dir = data_dir(&app)?;
+    let mut list = machines::load(&dir);
+    list.push(machines::validate(&name, &ssh, &list)?);
+    machines::save(&dir, &list)?;
+    app.state::<MachineState>().wake.notify_one();
+    machine_statuses(&app).await
+}
+
+#[tauri::command]
+async fn remove_machine(app: AppHandle, name: String) -> Result<Vec<MachineStatus>, String> {
+    let dir = data_dir(&app)?;
+    let mut list = machines::load(&dir);
+    list.retain(|m| m.name != name);
+    machines::save(&dir, &list)?;
+    app.state::<MachineState>().reports.lock().await.remove(&name);
+    let rows = collect_usage(&app, false).await?;
+    publish(&app, &rows);
+    machine_statuses(&app).await
+}
+
 /// Sets or clears (blank text) the label on one account, then pushes fresh rows.
 #[tauri::command]
 async fn set_label(app: AppHandle, id: String, text: String) -> Result<(), String> {
@@ -411,6 +567,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(LoginState::default())
         .manage(shell::UiState::default())
+        .manage(MachineState::default())
         .on_window_event(shell::on_window_event)
         .setup(|app| {
             let cache = match app.path().app_data_dir() {
@@ -420,6 +577,7 @@ pub fn run() {
             app.manage(CacheState(tokio::sync::Mutex::new(cache)));
             shell::init(app.handle())?;
             tauri::async_runtime::spawn(run_background_checks(app.handle().clone()));
+            tauri::async_runtime::spawn(run_machine_checks(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -428,6 +586,9 @@ pub fn run() {
             cancel_login,
             remove_account,
             set_label,
+            list_machines,
+            add_machine,
+            remove_machine,
             shell::content_height,
             shell::fit_to_content,
             shell::hide_window,

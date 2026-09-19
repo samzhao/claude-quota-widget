@@ -13,6 +13,7 @@ type AccountUsage = {
   id: string;
   label: string;
   tag: string | null;
+  machines: MachineBadge[];
   plan: string | null;
   read_only: boolean;
   status: "ok" | "needs_login" | "rate_limited" | "error";
@@ -20,6 +21,15 @@ type AccountUsage = {
   windows: UsageWindow[];
   as_of_ms: number | null;
   next_check_ms: number | null;
+};
+
+type MachineBadge = { machine: string; profile: string; running: number };
+type MachineStatus = {
+  name: string;
+  ssh: string;
+  sightings: { email: string; profile: string; running: number }[];
+  problem: string | null;
+  checked_at_ms: number | null;
 };
 
 type View = "grid" | "cards";
@@ -66,6 +76,13 @@ const compactWrap = $("#compact-wrap");
 const pinBtn = $<HTMLButtonElement>("#pin");
 const dockInput = $<HTMLInputElement>("#dock-icon");
 const fitBtn = $<HTMLButtonElement>("#fit");
+const machinesToggle = $<HTMLButtonElement>("#machines-toggle");
+const machinesPanel = $("#machines-panel");
+const machinesList = $("#machines-list");
+const machineForm = $<HTMLFormElement>("#machine-form");
+const machineName = $<HTMLInputElement>("#machine-name");
+const machineSsh = $<HTMLInputElement>("#machine-ssh");
+const machineNotice = $("#machine-notice");
 const noticeEl = $("#notice");
 
 // Per-viewer conveniences only; the app works the same if storage is unavailable.
@@ -251,6 +268,64 @@ function renderLabel(a: AccountUsage, offerAdd: boolean): HTMLElement | null {
   return chip;
 }
 
+/* ---------- Machines: where else each account is signed in ---------- */
+
+let machines: MachineStatus[] = [];
+
+/** A filled dot means Claude sessions are running there right now. */
+function renderMachineBadges(a: AccountUsage): HTMLElement[] {
+  return (a.machines ?? []).map((m) => {
+    const badge = el("span", m.running > 0 ? "machine-badge running" : "machine-badge", m.machine);
+    const sessions =
+      m.running > 0
+        ? `${m.running} Claude session${m.running === 1 ? "" : "s"} running now`
+        : "signed in, nothing running";
+    badge.title = `${m.machine}: ${sessions} (${m.profile})`;
+    return badge;
+  });
+}
+
+function renderMachines() {
+  machinesToggle.textContent = machines.length > 0 ? `Machines (${machines.length})` : "Machines";
+  const known = new Set(lastAccounts.map((a) => a.label.toLowerCase()));
+  machinesList.replaceChildren(
+    ...machines.map((m) => {
+      const row = el("div", "machine-row");
+      const head = el("div", "machine-head");
+      head.append(el("span", "machine-name", m.name), el("span", "muted", m.ssh));
+      const remove = el("button", "link danger", "Remove");
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        machines = await invoke<MachineStatus[]>("remove_machine", { name: m.name });
+        renderMachines();
+      });
+      head.append(remove);
+      row.append(head);
+
+      let detail: string;
+      let problem = false;
+      if (m.problem) {
+        detail = m.problem;
+        problem = true;
+      } else if (m.checked_at_ms === null) {
+        detail = "Checking…";
+      } else if (m.sightings.length === 0) {
+        detail = `No signed-in Claude profile found. Checked ${ago(m.checked_at_ms)}.`;
+      } else {
+        const parts = m.sightings.map((sighting) => {
+          const where = sighting.profile === "~/.claude" ? "" : ` (${sighting.profile})`;
+          const tracked = known.has(sighting.email) ? "" : ", not in this list";
+          const running = sighting.running > 0 ? `, ${sighting.running} running` : "";
+          return `${sighting.email}${where}${running}${tracked}`;
+        });
+        detail = `${parts.join("; ")}. Checked ${ago(m.checked_at_ms)}.`;
+      }
+      row.append(el("p", problem ? "machine-detail problem" : "machine-detail", detail));
+      return row;
+    }),
+  );
+}
+
 function statusDot(a: AccountUsage): HTMLElement {
   const dot = el("span", `dot ${a.status}`);
   dot.title = updateFailed(a)
@@ -323,6 +398,7 @@ function renderGrid(accounts: AccountUsage[]): HTMLElement {
     if (gridChip) nameLine.append(gridChip);
     who.append(nameLine);
     const under = el("div", "board-under");
+    under.append(...renderMachineBadges(a));
     if (updateFailed(a) || a.as_of_ms) {
       const age = a.as_of_ms ? ago(a.as_of_ms, true) : "no reading";
       const sub = el(
@@ -398,8 +474,6 @@ function renderCard(a: AccountUsage): HTMLElement {
     tag.title = "This is Claude Code's own login on this Mac. The app only reads it.";
     title.append(tag);
   }
-  const cardChip = renderLabel(a, true);
-  if (cardChip) title.append(cardChip);
   // The chip is about the login. A failed check with a working login still
   // reads "connected"; the failure gets its own badge below.
   const loginStatus = updateFailed(a) ? "ok" : a.status;
@@ -414,6 +488,10 @@ function renderCard(a: AccountUsage): HTMLElement {
     updated.title = `Read at ${clock(a.as_of_ms)}`;
     meta.append(updated);
   }
+  // Label and machines live here rather than beside the name, which needs the room.
+  const cardChip = renderLabel(a, true);
+  if (cardChip) meta.append(cardChip);
+  meta.append(...renderMachineBadges(a));
   if (updateFailed(a)) {
     const badge = el("span", `badge ${a.status}`, `Update failed: ${failureReason(a)}`);
     badge.title = failureDetail(a);
@@ -474,6 +552,7 @@ function render() {
   accountsEl.replaceChildren(
     ...(view === "grid" ? [renderGrid(lastAccounts)] : lastAccounts.map(renderCard)),
   );
+  renderMachines();
   // Repainted every minute along with the rest, so "X min ago" stays true.
   updatedEl.textContent = describeFreshness(lastAccounts);
 }
@@ -595,6 +674,37 @@ pinBtn.addEventListener("click", async () => {
   const pinned = pinBtn.getAttribute("aria-pressed") !== "true";
   applyAppSettings(await invoke<AppSettings>("set_pinned", { pinned }));
 });
+machinesToggle.addEventListener("click", () => {
+  machinesPanel.hidden = !machinesPanel.hidden;
+  saveSetting("machinesOpen", machinesPanel.hidden ? "0" : "1");
+});
+machineForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  machineNotice.textContent = "";
+  try {
+    machines = await invoke<MachineStatus[]>("add_machine", {
+      name: machineName.value,
+      ssh: machineSsh.value,
+    });
+    machineName.value = "";
+    machineSsh.value = "";
+    renderMachines();
+  } catch (error) {
+    machineNotice.textContent = String(error);
+  }
+});
+void listen<MachineStatus[]>("machines-updated", (event) => {
+  machines = event.payload;
+  renderMachines();
+}).catch(() => {});
+void invoke<MachineStatus[] | null>("list_machines")
+  .then((list) => {
+    machines = list ?? [];
+    renderMachines();
+  })
+  .catch(() => {});
+machinesPanel.hidden = loadSetting("machinesOpen", "0") !== "1";
+
 fitBtn.addEventListener("click", async () => {
   applyAppSettings(await invoke<AppSettings>("fit_to_content"));
 });

@@ -34,6 +34,8 @@ src-tauri/src/
   oauth.rs        renew an access token, merge the rotated refresh token
   usage.rs        fetch and parse usage limits
   cache.rs        last reading per account, plus all pacing and backoff rules
+  labels.rs       free-text label per account (also for the read-only default login)
+  machines.rs     optional SSH check of which account other machines are signed in to
   lib.rs          Tauri commands tying the above together
 src/
   main.ts         grid and cards views, settings, scheduling the next check
@@ -61,6 +63,16 @@ Check usage:
 - Other failures back off from 1 to 15 minutes.
 - A rejected token is not retried in a loop, and a dead refresh token stops renewal until the account is added again.
 - The cache is saved to disk, so restarting the app costs no requests.
+
+## Other machines
+
+Opt-in. For each configured machine the app runs one `ssh -o BatchMode=yes … -- <destination> 'sh -s'` and feeds a fixed probe script on stdin.
+
+- The script runs under plain `sh` on purpose: a zsh login shell aborts on an unmatched `claude-*` glob.
+- It runs `claude auth status --json` for `~/.claude` and for each profile folder that Claude Code has actually written a config into, then maps running `claude` processes to a profile through their `CLAUDE_CONFIG_DIR` environment.
+- The destination is validated to a host-safe alphabet, may not start with `-`, and is passed as a single argument after `--`, so it cannot become an ssh option or reach a shell.
+- A machine that cannot be reached drops its badges rather than showing stale "in use" marks. Failures are translated into a plain sentence with the fix (untrusted host key, no key login, unreachable).
+- Accounts are matched to sightings by email, case-insensitively.
 
 ## Security notes
 
