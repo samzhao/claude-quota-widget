@@ -16,8 +16,6 @@ Both themes follow the system appearance. In light mode:
 |---|---|
 | ![Grid view, warm theme, light mode](docs/screenshots/grid-warm-light.png) | ![Grid view, instrument theme, light mode](docs/screenshots/grid-instrument-light.png) |
 
-The screenshots use made-up accounts.
-
 ## Install
 
 1. Download the latest `.dmg` from [Releases](https://github.com/samzhao/claude-quota-widget/releases/latest) (Apple Silicon Macs).
