@@ -708,3 +708,96 @@ h1 img {
   display: block;
   pointer-events: none;
 }
+
+/* ---------- Account labels ---------- */
+
+.label-chip {
+  flex-shrink: 0;
+  max-width: 100%;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 11%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.label-chip:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.label-chip.empty {
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed var(--rule);
+}
+
+.label-input {
+  flex-shrink: 0;
+  width: 112px;
+  padding: 0 5px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  border-radius: 4px;
+  border: 1px solid var(--muted);
+  background: var(--surface);
+  color: var(--ink);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.board-under {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.board-under .label-chip,
+.board-under .label-input {
+  font-size: 10.5px;
+  line-height: 1.3;
+  padding: 0 4px;
+}
+
+.board-under .label-input {
+  width: 84px;
+}
+
+/* Grid: name and label share a line. The name keeps priority, the label
+   shrinks first, and a wider account column gives short labels room. */
+.board-nameline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.board-nameline .account-label {
+  flex: 0 0 auto;
+  max-width: 66%;
+}
+
+.board-nameline .label-chip,
+.board-nameline .label-input {
+  flex: 0 2 auto;
+  min-width: 4ch;
+  font-size: 10.5px;
+  line-height: 1.35;
+  padding: 0 4px;
+}
+
+.board-nameline .label-input {
+  flex: none;
+  width: 84px;
+}
+
+.board-row {
+  grid-template-columns: minmax(130px, 1.75fr) repeat(var(--limit-columns), minmax(72px, 1fr));
+  column-gap: 12px;
+}

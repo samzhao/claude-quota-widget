@@ -2,6 +2,7 @@ mod accounts;
 mod cache;
 mod credentials;
 mod keychain;
+mod labels;
 mod login;
 mod oauth;
 mod settings;
@@ -38,6 +39,8 @@ enum AccountStatus {
 struct AccountUsage {
     id: String,
     label: String,
+    /// Free text the user attached to this account, if any.
+    tag: Option<String>,
     plan: Option<String>,
     read_only: bool,
     status: AccountStatus,
@@ -90,10 +93,11 @@ impl Target {
     }
 }
 
-fn row_for(target: &Target, cache: &UsageCache) -> AccountUsage {
+fn row_for(target: &Target, cache: &UsageCache, labels: &labels::Labels) -> AccountUsage {
     let mut row = AccountUsage {
         id: target.id.clone(),
         label: target.label.clone(),
+        tag: labels.get(&target.id).cloned(),
         plan: target.oauth.as_ref().and_then(Oauth::plan),
         read_only: target.read_only,
         status: AccountStatus::Ok,
@@ -239,7 +243,11 @@ async fn collect_usage(app: &AppHandle, force: bool) -> Result<Vec<AccountUsage>
         cache.save();
     }
 
-    Ok(targets.iter().map(|target| row_for(target, &cache)).collect())
+    let labels = labels::load(&data_dir(app)?);
+    Ok(targets
+        .iter()
+        .map(|target| row_for(target, &cache, &labels))
+        .collect())
 }
 
 /// Pushes fresh rows to everything that shows them: the menubar item and,
@@ -342,6 +350,26 @@ async fn add_account(
     Ok(label)
 }
 
+/// Sets or clears (blank text) the label on one account, then pushes fresh rows.
+#[tauri::command]
+async fn set_label(app: AppHandle, id: String, text: String) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    // Only accounts that exist, so stale ids cannot pile up in the file.
+    let known = id == DEFAULT_ID || accounts::load(&dir).iter().any(|a| a.id == id);
+    if !known {
+        return Err("Unknown account.".to_string());
+    }
+    let mut all = labels::load(&dir);
+    match labels::clean(&text) {
+        Some(label) => all.insert(id, label),
+        None => all.remove(&id),
+    };
+    labels::save(&dir, &all)?;
+    let rows = collect_usage(&app, false).await?;
+    publish(&app, &rows);
+    Ok(())
+}
+
 #[tauri::command]
 fn cancel_login(login_state: State<'_, LoginState>) -> bool {
     login_state
@@ -370,6 +398,10 @@ async fn remove_account(
     let mut cache = cache_state.0.lock().await;
     cache.forget(&id);
     cache.save();
+    let mut all = labels::load(&dir);
+    if all.remove(&id).is_some() {
+        labels::save(&dir, &all)?;
+    }
     Ok(())
 }
 
@@ -395,6 +427,7 @@ pub fn run() {
             add_account,
             cancel_login,
             remove_account,
+            set_label,
             shell::content_height,
             shell::fit_to_content,
             shell::hide_window,

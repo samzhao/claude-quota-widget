@@ -12,6 +12,7 @@ type UsageWindow = {
 type AccountUsage = {
   id: string;
   label: string;
+  tag: string | null;
   plan: string | null;
   read_only: boolean;
   status: "ok" | "needs_login" | "rate_limited" | "error";
@@ -195,6 +196,61 @@ function renderReading(w: UsageWindow, resetPrefix: string): HTMLElement {
   return reading;
 }
 
+/* ---------- Labels: free text per account, edited in place ---------- */
+
+const LABEL_MAX_CHARS = 32;
+// Background pushes re-render the list; that must not yank an input mid-typing.
+let editingLabel = false;
+
+function editLabel(anchor: HTMLElement, a: AccountUsage) {
+  editingLabel = true;
+  const input = el("input", "label-input");
+  input.type = "text";
+  input.maxLength = LABEL_MAX_CHARS;
+  input.value = a.tag ?? "";
+  input.placeholder = "label";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", `Label for ${a.label}`);
+
+  let finished = false;
+  const finish = async (save: boolean) => {
+    if (finished) return;
+    finished = true;
+    editingLabel = false;
+    if (save && input.value.trim() !== (a.tag ?? "")) {
+      try {
+        await invoke("set_label", { id: a.id, text: input.value });
+      } catch (error) {
+        noticeEl.textContent = String(error);
+      }
+    }
+    render();
+  };
+  input.addEventListener("keydown", (event) => {
+    // Esc here cancels the edit; it must not reach the window-level "hide" handler.
+    event.stopPropagation();
+    if (event.key === "Enter") void finish(true);
+    else if (event.key === "Escape") void finish(false);
+  });
+  input.addEventListener("blur", () => void finish(true));
+
+  anchor.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+/** The label chip. `offerAdd` shows a quiet "+ label" when there is none yet. */
+function renderLabel(a: AccountUsage, offerAdd: boolean): HTMLElement | null {
+  if (!a.tag && !offerAdd) return null;
+  const chip = el("button", a.tag ? "label-chip" : "label-chip empty", a.tag ?? "+ label");
+  chip.type = "button";
+  chip.title = a.tag
+    ? "Click to edit. Clear the text to remove the label."
+    : "Add a label, for example which machine uses this account";
+  chip.addEventListener("click", () => editLabel(chip, a));
+  return chip;
+}
+
 function statusDot(a: AccountUsage): HTMLElement {
   const dot = el("span", `dot ${a.status}`);
   dot.title = updateFailed(a)
@@ -260,7 +316,13 @@ function renderGrid(accounts: AccountUsage[]): HTMLElement {
     const label = el("span", "account-label", names.get(a.id) ?? a.label);
     label.title = [a.label, a.plan, a.read_only ? "read-only" : null].filter(Boolean).join(", ");
     const who = el("div", "board-who");
-    who.append(label);
+    // Name and label share the top line; the reading age keeps its own line.
+    const nameLine = el("div", "board-nameline");
+    nameLine.append(label);
+    const gridChip = renderLabel(a, false);
+    if (gridChip) nameLine.append(gridChip);
+    who.append(nameLine);
+    const under = el("div", "board-under");
     if (updateFailed(a) || a.as_of_ms) {
       const age = a.as_of_ms ? ago(a.as_of_ms, true) : "no reading";
       const sub = el(
@@ -269,8 +331,9 @@ function renderGrid(accounts: AccountUsage[]): HTMLElement {
         updateFailed(a) ? `${a.status === "rate_limited" ? "throttled" : "failed"}, ${age}` : age,
       );
       sub.title = updateFailed(a) ? failureDetail(a) : `Read at ${clock(a.as_of_ms!)}`;
-      who.append(sub);
+      under.append(sub);
     }
+    if (under.childElementCount > 0) who.append(under);
     name.append(statusDot(a), who);
     row.append(name);
 
@@ -335,6 +398,8 @@ function renderCard(a: AccountUsage): HTMLElement {
     tag.title = "This is Claude Code's own login on this Mac. The app only reads it.";
     title.append(tag);
   }
+  const cardChip = renderLabel(a, true);
+  if (cardChip) title.append(cardChip);
   // The chip is about the login. A failed check with a working login still
   // reads "connected"; the failure gets its own badge below.
   const loginStatus = updateFailed(a) ? "ok" : a.status;
@@ -405,7 +470,7 @@ function render() {
   hideUnusedInput.checked = hideUnused;
   compactInput.checked = compactCards;
   compactWrap.hidden = view !== "cards";
-  if (lastAccounts.length === 0) return;
+  if (lastAccounts.length === 0 || editingLabel) return;
   accountsEl.replaceChildren(
     ...(view === "grid" ? [renderGrid(lastAccounts)] : lastAccounts.map(renderCard)),
   );
