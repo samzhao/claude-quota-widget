@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn scoped_service_matches_claude_code_naming() {
-        // Example: the item for /Users/example/.claude is `…-402b469b`.
+        // First 8 hex chars of sha256 of the config dir path, as Claude Code names it.
         assert_eq!(
             cli_scoped_service("/Users/example/.claude"),
             "Claude Code-credentials-402b469b"
