@@ -30,13 +30,22 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "12.0"
+    },
+    "category": "Utility",
+    "shortDescription": "See the usage limits of several Claude accounts side by side"
   }
 }
