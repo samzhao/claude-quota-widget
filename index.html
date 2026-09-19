@@ -11,22 +11,39 @@
     <header>
       <h1>Claude Quota</h1>
       <div class="header-actions">
-        <span id="updated" class="muted"></span>
-        <button id="refresh" type="button">Refresh</button>
+        <div class="segmented" role="group" aria-label="View">
+          <button id="view-grid" type="button" aria-pressed="true">Grid</button>
+          <button id="view-detail" type="button" aria-pressed="false">Detail</button>
+        </div>
+        <button id="refresh" type="button" title="Refresh now">Refresh</button>
       </div>
     </header>
+
     <main id="accounts" aria-live="polite"></main>
-    <form id="add-form" class="add">
-      <input
-        id="email"
-        type="email"
-        placeholder="email (optional, pre-fills login)"
-        autocomplete="off"
-        spellcheck="false"
-      />
-      <button id="add" type="submit">Add account</button>
-      <button id="cancel" type="button" hidden>Cancel</button>
-    </form>
-    <p id="notice" class="message" role="status"></p>
+
+    <footer>
+      <form id="add-form" class="add">
+        <button id="add" type="submit">Add account</button>
+        <button id="cancel" type="button" hidden>Cancel</button>
+        <button id="email-toggle" type="button" class="link">Pre-fill an email</button>
+        <input
+          id="email"
+          type="email"
+          placeholder="name@example.com"
+          aria-label="Email to pre-fill on the login page"
+          autocomplete="off"
+          spellcheck="false"
+          hidden
+        />
+      </form>
+      <div class="footer-meta">
+        <label class="check">
+          <input id="hide-unused" type="checkbox" />
+          Hide unused limits
+        </label>
+        <span id="updated" class="muted"></span>
+      </div>
+      <p id="notice" class="message" role="status"></p>
+    </footer>
   </body>
 </html>

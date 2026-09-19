@@ -5,6 +5,7 @@ type UsageWindow = {
   label: string;
   utilization: number;
   resets_at: string | null;
+  severity: string | null;
 };
 
 type AccountUsage = {
@@ -18,7 +19,12 @@ type AccountUsage = {
   fetched_at_ms: number;
 };
 
+type View = "grid" | "detail";
+type Level = "normal" | "warning" | "critical";
+
 const POLL_MS = 5 * 60 * 1000;
+const GAUGE_CELLS = 10;
+
 // The chip answers one question: is this account's login still working?
 const STATUS_TEXT: Record<AccountUsage["status"], string> = {
   ok: "connected",
@@ -33,14 +39,39 @@ const STATUS_HELP: Record<AccountUsage["status"], string> = {
   error: "The last usage check failed. Numbers may be stale.",
 };
 
-const accountsEl = document.querySelector<HTMLElement>("#accounts")!;
-const updatedEl = document.querySelector<HTMLElement>("#updated")!;
-const refreshBtn = document.querySelector<HTMLButtonElement>("#refresh")!;
-const addForm = document.querySelector<HTMLFormElement>("#add-form")!;
-const emailInput = document.querySelector<HTMLInputElement>("#email")!;
-const addBtn = document.querySelector<HTMLButtonElement>("#add")!;
-const cancelBtn = document.querySelector<HTMLButtonElement>("#cancel")!;
-const noticeEl = document.querySelector<HTMLElement>("#notice")!;
+const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
+const accountsEl = $("#accounts");
+const updatedEl = $("#updated");
+const refreshBtn = $<HTMLButtonElement>("#refresh");
+const gridBtn = $<HTMLButtonElement>("#view-grid");
+const detailBtn = $<HTMLButtonElement>("#view-detail");
+const addForm = $<HTMLFormElement>("#add-form");
+const emailInput = $<HTMLInputElement>("#email");
+const emailToggle = $<HTMLButtonElement>("#email-toggle");
+const addBtn = $<HTMLButtonElement>("#add");
+const cancelBtn = $<HTMLButtonElement>("#cancel");
+const hideUnusedInput = $<HTMLInputElement>("#hide-unused");
+const noticeEl = $("#notice");
+
+// Per-viewer conveniences only; the app works the same if storage is unavailable.
+function loadSetting(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function saveSetting(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+let view: View = loadSetting("view", "grid") === "detail" ? "detail" : "grid";
+let hideUnused = loadSetting("hideUnused", "1") === "1";
+let lastAccounts: AccountUsage[] = [];
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -53,98 +84,248 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function resetsIn(iso: string | null): string {
-  if (!iso) return "not started";
+/** A limit nobody has touched yet: 0% and no reset clock running. */
+function isUnused(w: UsageWindow): boolean {
+  return w.utilization === 0 && !w.resets_at;
+}
+
+function timeLeft(iso: string | null): string | null {
+  if (!iso) return null;
   const ms = new Date(iso).getTime() - Date.now();
-  if (Number.isNaN(ms)) return "";
-  if (ms <= 0) return "resetting";
+  if (Number.isNaN(ms)) return null;
+  if (ms <= 0) return "now";
   const minutes = Math.round(ms / 60000);
-  if (minutes < 60) return `resets in ${minutes}m`;
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `resets in ${hours}h ${minutes % 60}m`;
-  return `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
-function level(utilization: number): string {
-  if (utilization >= 90) return "critical";
-  if (utilization >= 70) return "warn";
-  return "fine";
+function levelOf(w: UsageWindow): Level {
+  if (w.severity === "normal" || w.severity === "warning" || w.severity === "critical") {
+    return w.severity;
+  }
+  if (w.utilization >= 90) return "critical";
+  if (w.utilization >= 70) return "warning";
+  return "normal";
 }
 
-function renderWindow(w: UsageWindow): HTMLElement {
-  const row = el("div", "window");
+/** Ten-cell fuel gauge. Partial cells round up so 4% still lights one cell. */
+function renderGauge(w: UsageWindow): HTMLElement {
   const pct = Math.max(0, Math.min(100, w.utilization));
-
-  const head = el("div", "window-head");
-  head.append(el("span", "window-label", w.label));
-  head.append(el("span", "window-pct", `${Math.round(w.utilization)}%`));
-
-  const track = el("div", "track");
-  track.setAttribute("role", "progressbar");
-  track.setAttribute("aria-valuemin", "0");
-  track.setAttribute("aria-valuemax", "100");
-  track.setAttribute("aria-valuenow", String(Math.round(pct)));
-  track.setAttribute("aria-label", `${w.label} usage`);
-  const fill = el("div", `fill ${level(pct)}`);
-  fill.style.width = `${pct}%`;
-  track.append(fill);
-
-  row.append(head, track, el("div", "muted small", resetsIn(w.resets_at)));
-  return row;
+  const lit = pct === 0 ? 0 : Math.max(1, Math.round((pct / 100) * GAUGE_CELLS));
+  const gauge = el("div", `gauge ${levelOf(w)}`);
+  gauge.setAttribute("role", "meter");
+  gauge.setAttribute("aria-valuemin", "0");
+  gauge.setAttribute("aria-valuemax", "100");
+  gauge.setAttribute("aria-valuenow", String(Math.round(pct)));
+  gauge.setAttribute("aria-label", `${w.label} used`);
+  for (let i = 0; i < GAUGE_CELLS; i++) {
+    gauge.append(el("i", i < lit ? "lit" : undefined));
+  }
+  return gauge;
 }
 
-function renderAccount(a: AccountUsage): HTMLElement {
-  const card = el("section", "account");
+function renderReading(w: UsageWindow, resetPrefix: string): HTMLElement {
+  const reading = el("div", "reading");
+  reading.append(el("span", `pct ${levelOf(w)}`, `${Math.round(w.utilization)}%`));
+  const left = timeLeft(w.resets_at);
+  const reset = el("span", "reset", left ? `${resetPrefix}${left}` : "idle");
+  reset.title = w.resets_at
+    ? `Resets ${new Date(w.resets_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+    : "This limit's clock starts with the next message.";
+  reading.append(reset);
+  return reading;
+}
+
+function statusDot(a: AccountUsage): HTMLElement {
+  const dot = el("span", `dot ${a.status}`);
+  dot.title = `${STATUS_TEXT[a.status]}: ${STATUS_HELP[a.status]}`;
+  dot.setAttribute("role", "img");
+  dot.setAttribute("aria-label", STATUS_TEXT[a.status]);
+  return dot;
+}
+
+/* ---------- Grid view: accounts down, limits across ---------- */
+
+function gridColumns(accounts: AccountUsage[]): { key: string; label: string }[] {
+  const columns = new Map<string, string>();
+  for (const a of accounts) {
+    for (const w of a.windows) {
+      if (hideUnused && isUnused(w)) continue;
+      if (!columns.has(w.key)) columns.set(w.key, w.label);
+    }
+  }
+  // Accounts that are all idle would otherwise produce an empty board.
+  if (columns.size === 0) {
+    for (const a of accounts) for (const w of a.windows) columns.set(w.key, w.label);
+  }
+  return [...columns].map(([key, label]) => ({ key, label }));
+}
+
+function renderGrid(accounts: AccountUsage[]): HTMLElement {
+  const columns = gridColumns(accounts);
+  const board = el("div", "board");
+  board.style.setProperty("--limit-columns", String(Math.max(1, columns.length)));
+  board.setAttribute("role", "table");
+
+  const headRow = el("div", "board-row board-head");
+  headRow.setAttribute("role", "row");
+  const corner = el("span", "board-account", "Account");
+  corner.setAttribute("role", "columnheader");
+  headRow.append(corner);
+  for (const column of columns) {
+    const th = el("span", "board-cell", column.label);
+    th.setAttribute("role", "columnheader");
+    headRow.append(th);
+  }
+  board.append(headRow);
+
+  for (const a of accounts) {
+    const row = el("div", "board-row");
+    row.setAttribute("role", "row");
+
+    const name = el("div", "board-account");
+    name.setAttribute("role", "rowheader");
+    const label = el("span", "account-label", a.label);
+    label.title = [a.label, a.plan, a.read_only ? "read-only" : null].filter(Boolean).join(", ");
+    name.append(statusDot(a), label);
+    row.append(name);
+
+    if (a.status !== "ok" && a.windows.length === 0) {
+      const problem = el("div", `board-problem ${a.status}`, a.message ?? STATUS_TEXT[a.status]);
+      problem.setAttribute("role", "cell");
+      row.append(problem);
+    } else {
+      for (const column of columns) {
+        const cell = el("div", "board-cell");
+        cell.setAttribute("role", "cell");
+        const w = a.windows.find((candidate) => candidate.key === column.key);
+        if (w) {
+          cell.append(renderGauge(w), renderReading(w, ""));
+        } else {
+          cell.append(el("span", "reset", "no limit"));
+        }
+        row.append(cell);
+      }
+    }
+    board.append(row);
+  }
+  return board;
+}
+
+/* ---------- Detail view: one block per account ---------- */
+
+function renderRemove(a: AccountUsage): HTMLElement {
+  const remove = el("button", "link danger", "Remove account");
+  remove.type = "button";
+  // Two clicks instead of a confirm() dialog, which blocks the webview.
+  remove.addEventListener("click", async () => {
+    if (remove.dataset.armed !== "1") {
+      remove.dataset.armed = "1";
+      remove.textContent = "Click again to remove";
+      setTimeout(() => {
+        remove.dataset.armed = "";
+        remove.textContent = "Remove account";
+      }, 3000);
+      return;
+    }
+    try {
+      await invoke("remove_account", { id: a.id });
+      noticeEl.textContent = `Removed ${a.label}.`;
+    } catch (error) {
+      noticeEl.textContent = String(error);
+    }
+    void refresh();
+  });
+  return remove;
+}
+
+function renderDetail(a: AccountUsage): HTMLElement {
+  const block = el("section", "account");
 
   const head = el("div", "account-head");
   const title = el("div", "account-title");
   title.append(el("span", "account-label", a.label));
   if (a.plan) title.append(el("span", "tag", a.plan));
-  if (a.read_only) title.append(el("span", "tag", "read-only"));
+  if (a.read_only) {
+    const tag = el("span", "tag", "read-only");
+    tag.title = "This is Claude Code's own login on this Mac. The app only reads it.";
+    title.append(tag);
+  }
   const chip = el("span", `chip ${a.status}`, STATUS_TEXT[a.status]);
   chip.title = STATUS_HELP[a.status];
   head.append(title, chip);
-  card.append(head);
+  block.append(head);
 
-  if (a.message) card.append(el("p", "message", a.message));
-  for (const w of a.windows) card.append(renderWindow(w));
-  if (a.status === "ok" && a.windows.length === 0) {
-    card.append(el("p", "message", "No usage windows reported."));
+  if (a.message) {
+    const stale = a.status !== "ok" && a.windows.length > 0;
+    block.append(el("p", "message", stale ? `${a.message} Showing the last good reading.` : a.message));
   }
 
-  if (!a.read_only) {
-    const remove = el("button", "link", "Remove");
-    remove.type = "button";
-    // Two clicks instead of a confirm() dialog, which blocks the webview.
-    remove.addEventListener("click", async () => {
-      if (remove.dataset.armed !== "1") {
-        remove.dataset.armed = "1";
-        remove.textContent = "Click again to remove";
-        setTimeout(() => {
-          remove.dataset.armed = "";
-          remove.textContent = "Remove";
-        }, 3000);
-        return;
-      }
-      try {
-        await invoke("remove_account", { id: a.id });
-        noticeEl.textContent = `Removed ${a.label}.`;
-      } catch (error) {
-        noticeEl.textContent = String(error);
-      }
-      void refresh();
-    });
-    card.append(remove);
+  const shown = a.windows.filter((w) => !(hideUnused && isUnused(w)));
+  for (const w of shown) {
+    const row = el("div", "limit");
+    row.append(el("span", "limit-label", w.label), renderGauge(w), renderReading(w, "resets in "));
+    block.append(row);
   }
-  return card;
+  const hidden = a.windows.length - shown.length;
+  if (hidden > 0) {
+    block.append(el("p", "message", `${hidden} unused limit${hidden === 1 ? "" : "s"} hidden.`));
+  } else if (a.status === "ok" && a.windows.length === 0) {
+    block.append(el("p", "message", "No limits reported for this account."));
+  }
+
+  if (!a.read_only) block.append(renderRemove(a));
+  return block;
+}
+
+/* ---------- Wiring ---------- */
+
+function render() {
+  gridBtn.setAttribute("aria-pressed", String(view === "grid"));
+  detailBtn.setAttribute("aria-pressed", String(view === "detail"));
+  hideUnusedInput.checked = hideUnused;
+  if (lastAccounts.length === 0) return;
+  accountsEl.replaceChildren(
+    ...(view === "grid" ? [renderGrid(lastAccounts)] : lastAccounts.map(renderDetail)),
+  );
+}
+
+/**
+ * A throttled or failed check comes back with no limits. Keep showing the last
+ * good reading for that account (the status dot still flags it as stale)
+ * rather than blanking the row.
+ */
+function keepLastGoodReadings(fresh: AccountUsage[]): AccountUsage[] {
+  let cache: Record<string, UsageWindow[]> = {};
+  try {
+    cache = JSON.parse(loadSetting("lastGoodWindows", "{}"));
+  } catch {
+    cache = {};
+  }
+  const merged = fresh.map((a) => {
+    if (a.status === "ok") {
+      cache[a.id] = a.windows;
+      return a;
+    }
+    const stale = a.status === "rate_limited" || a.status === "error";
+    return stale && a.windows.length === 0 && cache[a.id]?.length
+      ? { ...a, windows: cache[a.id] }
+      : a;
+  });
+  const liveIds = new Set(fresh.map((a) => a.id));
+  for (const id of Object.keys(cache)) if (!liveIds.has(id)) delete cache[id];
+  saveSetting("lastGoodWindows", JSON.stringify(cache));
+  return merged;
 }
 
 async function refresh() {
   refreshBtn.disabled = true;
   try {
-    const accounts = await invoke<AccountUsage[]>("list_usage");
-    accountsEl.replaceChildren(...accounts.map(renderAccount));
-    updatedEl.textContent = `updated ${new Date().toLocaleTimeString([], {
+    lastAccounts = keepLastGoodReadings(await invoke<AccountUsage[]>("list_usage"));
+    render();
+    updatedEl.textContent = `Updated ${new Date().toLocaleTimeString([], {
       hour: "numeric",
       minute: "2-digit",
     })}`;
@@ -155,20 +336,26 @@ async function refresh() {
   }
 }
 
+function setView(next: View) {
+  view = next;
+  saveSetting("view", next);
+  render();
+}
+
 function setLoggingIn(active: boolean) {
   addBtn.disabled = active;
   emailInput.disabled = active;
+  emailToggle.disabled = active;
   cancelBtn.hidden = !active;
 }
 
 addForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   setLoggingIn(true);
-  noticeEl.textContent = "Finish the login in your browser. Waiting up to 3 minutes.";
+  noticeEl.textContent = "Finish signing in in your browser. Waiting up to 3 minutes.";
   try {
-    const label = await invoke<string>("add_account", {
-      emailHint: emailInput.value.trim() || null,
-    });
+    const hint = emailInput.hidden ? "" : emailInput.value.trim();
+    const label = await invoke<string>("add_account", { emailHint: hint || null });
     noticeEl.textContent = `Added ${label}.`;
     emailInput.value = "";
     await refresh();
@@ -179,7 +366,25 @@ addForm.addEventListener("submit", async (event) => {
   }
 });
 
+emailToggle.addEventListener("click", () => {
+  emailInput.hidden = !emailInput.hidden;
+  emailToggle.textContent = emailInput.hidden ? "Pre-fill an email" : "Skip the email";
+  if (!emailInput.hidden) emailInput.focus();
+});
+
+hideUnusedInput.addEventListener("change", () => {
+  hideUnused = hideUnusedInput.checked;
+  saveSetting("hideUnused", hideUnused ? "1" : "0");
+  render();
+});
+
+gridBtn.addEventListener("click", () => setView("grid"));
+detailBtn.addEventListener("click", () => setView("detail"));
 cancelBtn.addEventListener("click", () => void invoke("cancel_login"));
 refreshBtn.addEventListener("click", () => void refresh());
 setInterval(() => void refresh(), POLL_MS);
+// Countdown text goes stale between polls; repaint it without refetching.
+setInterval(render, 60 * 1000);
+
+render();
 void refresh();

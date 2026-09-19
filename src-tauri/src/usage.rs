@@ -4,20 +4,24 @@
 //! change without notice, so they live only in this file.
 
 use serde::Serialize;
+use serde_json::Value;
 use std::time::Duration;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct UsageWindow {
+    /// Stable across accounts, so the grid view can line windows up in columns.
     pub key: String,
     pub label: String,
     /// Percent used, 0-100.
     pub utilization: f64,
     /// ISO timestamp or null when the window has not started.
     pub resets_at: Option<String>,
+    /// Server's own read of the level: normal / warning / critical.
+    pub severity: Option<String>,
 }
 
 pub enum UsageError {
@@ -26,51 +30,81 @@ pub enum UsageError {
     Other(String),
 }
 
-fn label_for(key: &str) -> String {
-    match key {
-        "five_hour" => "5-hour".to_string(),
-        "seven_day" => "7-day".to_string(),
-        other => other
-            .replace("seven_day", "7-day")
-            .replace("five_hour", "5-hour")
-            .split('_')
-            .filter(|part| !part.is_empty())
-            .map(|part| {
-                let mut chars = part.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => String::new(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    }
+fn title_case(snake: &str) -> String {
+    snake
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-/// Any top-level object with a numeric `utilization` is a window. Parsing this
-/// loosely means new per-model windows show up without a code change.
-fn windows_from(body: &serde_json::Value) -> Vec<UsageWindow> {
-    let Some(map) = body.as_object() else {
-        return Vec::new();
-    };
-    let mut windows: Vec<UsageWindow> = map
+fn string_at(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// The `limits` array is what the Claude apps render: one entry per limit,
+/// including model-scoped ones like Fable that have no top-level field.
+fn windows_from_limits(limits: &[Value]) -> Vec<UsageWindow> {
+    limits
         .iter()
-        .filter_map(|(key, value)| {
-            let utilization = value.get("utilization")?.as_f64()?;
+        .filter_map(|limit| {
+            let kind = limit.get("kind")?.as_str()?;
+            let utilization = limit.get("percent")?.as_f64()?;
+            let model = limit
+                .pointer("/scope/model/display_name")
+                .and_then(Value::as_str);
+            let (key, label) = match (kind, model) {
+                ("session", _) => ("session".to_string(), "5-hour".to_string()),
+                ("weekly_all", _) => ("weekly_all".to_string(), "All models".to_string()),
+                (_, Some(model)) => (format!("{kind}:{}", model.to_lowercase()), model.to_string()),
+                (other, None) => (other.to_string(), title_case(other)),
+            };
             Some(UsageWindow {
-                key: key.clone(),
-                label: label_for(key),
+                key,
+                label,
                 utilization,
-                resets_at: value
-                    .get("resets_at")
-                    .and_then(|r| r.as_str())
-                    .map(str::to_string),
+                resets_at: string_at(limit, "resets_at"),
+                severity: string_at(limit, "severity"),
             })
         })
-        .collect();
+        .collect()
+}
+
+/// Older response shape: top-level `five_hour` / `seven_day` objects. Only the
+/// two well-known ones, because the rest are unlabeled internal codenames.
+fn windows_from_legacy(body: &Value) -> Vec<UsageWindow> {
+    [("five_hour", "session", "5-hour"), ("seven_day", "weekly_all", "All models")]
+        .into_iter()
+        .filter_map(|(field, key, label)| {
+            let window = body.get(field)?;
+            Some(UsageWindow {
+                key: key.to_string(),
+                label: label.to_string(),
+                utilization: window.get("utilization")?.as_f64()?,
+                resets_at: string_at(window, "resets_at"),
+                severity: None,
+            })
+        })
+        .collect()
+}
+
+fn windows_from(body: &Value) -> Vec<UsageWindow> {
+    let mut windows = body
+        .get("limits")
+        .and_then(Value::as_array)
+        .map(|limits| windows_from_limits(limits))
+        .filter(|windows| !windows.is_empty())
+        .unwrap_or_else(|| windows_from_legacy(body));
     let rank = |key: &str| match key {
-        "five_hour" => 0,
-        "seven_day" => 1,
+        "session" => 0,
+        "weekly_all" => 1,
         _ => 2,
     };
     windows.sort_by(|a, b| rank(&a.key).cmp(&rank(&b.key)).then(a.key.cmp(&b.key)));
@@ -100,7 +134,7 @@ pub async fn fetch(access_token: &str) -> Result<Vec<UsageWindow>, UsageError> {
         other => return Err(UsageError::Other(format!("usage endpoint returned {other}"))),
     }
 
-    let body: serde_json::Value = response
+    let body: Value = response
         .json()
         .await
         .map_err(|e| UsageError::Other(e.without_url().to_string()))?;
@@ -112,19 +146,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_known_and_unknown_windows_and_skips_nulls() {
+    fn limits_array_wins_and_surfaces_model_scoped_limits() {
         let body = serde_json::json!({
-            "seven_day_opus": { "utilization": 12.5, "resets_at": null },
-            "seven_day": { "utilization": 40.0, "resets_at": "2026-09-22T12:00:00+00:00" },
-            "five_hour": { "utilization": 1.0, "resets_at": "2026-09-19T12:30:00+00:00" },
-            "seven_day_oauth_apps": null,
-            "limits": [{ "kind": "x" }]
+            "five_hour": { "utilization": 4.0, "resets_at": "2026-09-19T12:30:00+00:00" },
+            "nimbus_quill": { "utilization": 0.0, "resets_at": null },
+            "limits": [
+                { "kind": "weekly_scoped", "percent": 93, "severity": "critical",
+                  "resets_at": "2026-09-22T22:00:00+00:00",
+                  "scope": { "model": { "id": null, "display_name": "Fable" }, "surface": null } },
+                { "kind": "weekly_all", "percent": 78, "severity": "warning",
+                  "resets_at": "2026-09-22T22:00:00+00:00", "scope": null },
+                { "kind": "session", "percent": 4, "severity": "normal",
+                  "resets_at": "2026-09-19T12:30:00+00:00", "scope": null }
+            ]
         });
         let windows = windows_from(&body);
-        let keys: Vec<&str> = windows.iter().map(|w| w.key.as_str()).collect();
-        assert_eq!(keys, ["five_hour", "seven_day", "seven_day_opus"]);
-        assert_eq!(windows[2].label, "7-day Opus");
-        assert_eq!(windows[2].resets_at, None);
+        let summary: Vec<(&str, &str, f64)> = windows
+            .iter()
+            .map(|w| (w.key.as_str(), w.label.as_str(), w.utilization))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("session", "5-hour", 4.0),
+                ("weekly_all", "All models", 78.0),
+                ("weekly_scoped:fable", "Fable", 93.0),
+            ]
+        );
+        assert_eq!(windows[2].severity.as_deref(), Some("critical"));
+    }
+
+    #[test]
+    fn falls_back_to_legacy_fields_without_codename_noise() {
+        let body = serde_json::json!({
+            "seven_day": { "utilization": 40.0, "resets_at": null },
+            "five_hour": { "utilization": 1.0, "resets_at": "2026-09-19T12:30:00+00:00" },
+            "nimbus_quill": { "utilization": 0.0, "resets_at": null },
+            "seven_day_opus": null,
+            "limits": []
+        });
+        let keys: Vec<String> = windows_from(&body).into_iter().map(|w| w.key).collect();
+        assert_eq!(keys, ["session", "weekly_all"]);
     }
 
     /// Live check against the real endpoint with this Mac's default login.
@@ -141,8 +203,8 @@ mod tests {
             Err(UsageError::Other(m)) => panic!("{m}"),
         };
         for w in &windows {
-            println!("{}: {}% resets_at={:?}", w.label, w.utilization, w.resets_at);
+            println!("{}: {}% {:?} resets_at={:?}", w.label, w.utilization, w.severity, w.resets_at);
         }
-        assert!(windows.iter().any(|w| w.key == "five_hour"));
+        assert!(windows.iter().any(|w| w.key == "session"));
     }
 }
