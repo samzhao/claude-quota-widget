@@ -18,6 +18,22 @@ Both themes follow the system appearance. In light mode:
 
 The screenshots use made-up accounts.
 
+## Install
+
+1. Download the latest `.dmg` from [Releases](https://github.com/samzhao/claude-quota-widget/releases/latest) (Apple Silicon Macs).
+2. Open it and drag **Claude Quota** into Applications.
+3. The first time you open it, macOS will say it could not verify the app. That is expected: the app is not signed with a paid Apple Developer ID. Go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**. You only do this once.
+
+If you prefer the terminal, this clears the download flag instead of step 3:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Claude Quota.app"
+```
+
+You need [Claude Code](https://claude.com/claude-code) installed, because the app uses its `claude` command to sign accounts in. Or skip the download and [build it from source](#run-it).
+
+The app lives in the menubar: click the gauge to open it, press Esc to hide it.
+
 ## What it does
 
 - Adds an account by running the official `claude auth login` in a throwaway config folder. Your browser opens, you sign in, and the row appears. No email or API key to type.

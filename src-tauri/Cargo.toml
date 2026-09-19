@@ -1,6 +1,6 @@
 [package]
 name = "claude-quota-widget"
-version = "0.1.0"
+version = "0.2.0"
 description = "See the usage limits of several Claude accounts side by side"
 authors = ["samzhao"]
 license = "MIT"
