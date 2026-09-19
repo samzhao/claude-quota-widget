@@ -59,7 +59,7 @@ The app lives in the menubar: click the gauge to open it, press Esc to hide it.
 ```sh
 pnpm install
 pnpm tauri dev     # development
-pnpm tauri build   # produces a .app bundle
+./scripts/build-release.sh   # signed .app and .dmg, without your home path baked into the binary
 ```
 
 Tests: `cd src-tauri && cargo test`. Tests that touch the real keychain or network are marked `#[ignore]` and only run when asked for.
