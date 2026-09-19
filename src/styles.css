@@ -627,3 +627,19 @@ p#updated:empty {
 .account.compact .account-meta {
   margin-bottom: 2px;
 }
+
+/* ---------- Pin button ---------- */
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  color: var(--muted);
+}
+
+.icon-button[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}

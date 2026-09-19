@@ -16,6 +16,11 @@
           <button id="view-cards" type="button" aria-pressed="false">Cards</button>
         </div>
         <button id="refresh" type="button" title="Refresh now">Refresh</button>
+        <button id="pin" type="button" class="icon-button" aria-pressed="false" aria-label="Pin on top">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <path d="M9.8 1.5 14.5 6.2l-1.6.5-2.3 2.3.2 3.2-1.2 1.2-3-3L2.8 14.2l-1-1L5.6 9.4l-3-3 1.2-1.2 3.2.2 2.3-2.3z" fill="currentColor" />
+          </svg>
+        </button>
       </div>
     </header>
 
@@ -44,6 +49,10 @@
         <label class="check" id="compact-wrap" hidden>
           <input id="compact" type="checkbox" />
           Compact cards
+        </label>
+        <label class="check" title="Off: the app lives only in the menubar. Closing the window hides it either way.">
+          <input id="dock-icon" type="checkbox" />
+          Show in Dock
         </label>
         <label class="check">
           Theme

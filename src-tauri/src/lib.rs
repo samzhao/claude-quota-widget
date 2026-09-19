@@ -4,6 +4,9 @@ mod credentials;
 mod keychain;
 mod login;
 mod oauth;
+mod settings;
+mod shell;
+mod tray;
 mod usage;
 
 use accounts::Account;
@@ -15,7 +18,7 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 use usage::UsageWindow;
 
@@ -146,14 +149,11 @@ fn row_for(target: &Target, cache: &UsageCache) -> AccountUsage {
     row
 }
 
-#[tauri::command]
-async fn list_usage(
-    app: AppHandle,
-    cache_state: State<'_, CacheState>,
-    force: Option<bool>,
-) -> Result<Vec<AccountUsage>, String> {
-    let force = force.unwrap_or(false);
-    let managed = accounts::load(&data_dir(&app)?);
+/// The one place usage is gathered, for both the window and the background
+/// checker. The cache decides which accounts, if any, touch the network.
+async fn collect_usage(app: &AppHandle, force: bool) -> Result<Vec<AccountUsage>, String> {
+    let cache_state = app.state::<CacheState>();
+    let managed = accounts::load(&data_dir(app)?);
     let default_email = credentials::read_default_email();
 
     let mut targets = Vec::new();
@@ -240,6 +240,55 @@ async fn list_usage(
     }
 
     Ok(targets.iter().map(|target| row_for(target, &cache)).collect())
+}
+
+/// Pushes fresh rows to everything that shows them: the menubar item and,
+/// if it is open, the window.
+fn publish(app: &AppHandle, rows: &[AccountUsage]) {
+    let candidates: Vec<tray::Candidate> = rows
+        .iter()
+        .filter(|row| !matches!(row.status, AccountStatus::NeedsLogin))
+        .map(|row| tray::Candidate {
+            label: &row.label,
+            utilizations: row.windows.iter().map(|w| w.utilization).collect(),
+        })
+        .collect();
+    shell::update_tray(app, &tray::summarize(&candidates));
+    let _ = app.emit("usage-updated", rows);
+}
+
+#[tauri::command]
+async fn list_usage(app: AppHandle, force: Option<bool>) -> Result<Vec<AccountUsage>, String> {
+    let rows = collect_usage(&app, force.unwrap_or(false)).await?;
+    publish(&app, &rows);
+    Ok(rows)
+}
+
+/// Keeps readings and the menubar current while the window is hidden, where
+/// page timers cannot be relied on. Sleeps until the cache says the soonest
+/// account is due, so an idle app makes no requests in between.
+async fn run_background_checks(app: AppHandle) {
+    const SHORTEST_MS: f64 = 30_000.0;
+    const LONGEST_MS: f64 = 15.0 * 60_000.0;
+    loop {
+        let wait_ms = match collect_usage(&app, false).await {
+            Ok(rows) => {
+                publish(&app, &rows);
+                rows.iter()
+                    .filter_map(|row| row.next_check_ms)
+                    .fold(f64::INFINITY, f64::min)
+                    - now_ms()
+                    + 2_000.0
+            }
+            Err(error) => {
+                eprintln!("[checks] {error}");
+                60_000.0
+            }
+        };
+        let wait_ms = if wait_ms.is_finite() { wait_ms } else { 5.0 * 60_000.0 };
+        let wait = std::time::Duration::from_millis(wait_ms.clamp(SHORTEST_MS, LONGEST_MS) as u64);
+        tokio::time::sleep(wait).await;
+    }
 }
 
 #[tauri::command]
@@ -329,19 +378,26 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(LoginState::default())
+        .manage(shell::UiState::default())
+        .on_window_event(shell::on_window_event)
         .setup(|app| {
             let cache = match app.path().app_data_dir() {
                 Ok(dir) => UsageCache::load(&dir),
                 Err(_) => UsageCache::default(),
             };
             app.manage(CacheState(tokio::sync::Mutex::new(cache)));
+            shell::init(app.handle())?;
+            tauri::async_runtime::spawn(run_background_checks(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_usage,
             add_account,
             cancel_login,
-            remove_account
+            remove_account,
+            shell::get_settings,
+            shell::set_pinned,
+            shell::set_show_dock_icon
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

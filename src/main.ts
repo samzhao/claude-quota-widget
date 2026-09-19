@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 type UsageWindow = {
   key: string;
@@ -22,11 +23,9 @@ type AccountUsage = {
 
 type View = "grid" | "cards";
 type Theme = "warm" | "instrument";
+type AppSettings = { pinned: boolean; show_dock_icon: boolean };
 type Level = "normal" | "warning" | "critical";
 
-// The Rust cache decides whether a check really hits the network (usage
-// endpoint budget is tight), so this timer only has to be "often enough".
-const POLL_MS = 5 * 60 * 1000;
 const GAUGE_CELLS = 10;
 
 // The chip answers one question: is this account's login still working?
@@ -58,6 +57,8 @@ const hideUnusedInput = $<HTMLInputElement>("#hide-unused");
 const themeSelect = $<HTMLSelectElement>("#theme");
 const compactInput = $<HTMLInputElement>("#compact");
 const compactWrap = $("#compact-wrap");
+const pinBtn = $<HTMLButtonElement>("#pin");
+const dockInput = $<HTMLInputElement>("#dock-icon");
 const noticeEl = $("#notice");
 
 // Per-viewer conveniences only; the app works the same if storage is unavailable.
@@ -416,23 +417,6 @@ function describeFreshness(accounts: AccountUsage[]): string {
   return parts.join(", ");
 }
 
-/**
- * Wake up when the cache says the soonest account is due (for example right
- * after a Retry-After window closes) instead of on a fixed beat.
- */
-let nextCheckTimer: number | undefined;
-function scheduleNextCheck() {
-  const due = lastAccounts
-    .map((a) => a.next_check_ms)
-    .filter((ms): ms is number => ms !== null);
-  const wait = due.length > 0 ? Math.min(...due) - Date.now() + 2000 : POLL_MS;
-  window.clearTimeout(nextCheckTimer);
-  nextCheckTimer = window.setTimeout(
-    () => void refresh(),
-    Math.max(30 * 1000, Math.min(wait, 15 * 60 * 1000)),
-  );
-}
-
 async function refresh(force = false) {
   refreshBtn.disabled = true;
   try {
@@ -443,8 +427,15 @@ async function refresh(force = false) {
     accountsEl.replaceChildren(el("p", "message", `Could not load usage: ${String(error)}`));
   } finally {
     refreshBtn.disabled = false;
-    scheduleNextCheck();
   }
+}
+
+function applyAppSettings(settings: AppSettings) {
+  pinBtn.setAttribute("aria-pressed", String(settings.pinned));
+  pinBtn.title = settings.pinned
+    ? "Pinned: stays on top, on every Space. Click to unpin."
+    : "Pin on top of other windows, on every Space";
+  dockInput.checked = settings.show_dock_icon;
 }
 
 function setView(next: View) {
@@ -503,7 +494,24 @@ themeSelect.addEventListener("change", () => {
   saveSetting("theme", theme);
   applyTheme();
 });
-scheduleNextCheck();
+pinBtn.addEventListener("click", async () => {
+  const pinned = pinBtn.getAttribute("aria-pressed") !== "true";
+  applyAppSettings(await invoke<AppSettings>("set_pinned", { pinned }));
+});
+dockInput.addEventListener("change", async () => {
+  applyAppSettings(await invoke<AppSettings>("set_show_dock_icon", { show: dockInput.checked }));
+});
+
+// The Rust side checks usage in the background (page timers stall while the
+// window is hidden) and pushes every new set of readings here.
+void listen<AccountUsage[]>("usage-updated", (event) => {
+  lastAccounts = event.payload;
+  render();
+}).catch(() => {});
+void listen("refresh-requested", () => void refresh(true)).catch(() => {});
+void invoke<AppSettings | null>("get_settings")
+  .then((settings) => settings && applyAppSettings(settings))
+  .catch(() => {});
 // Countdown text goes stale between polls; repaint it without refetching.
 setInterval(render, 60 * 1000);
 
