@@ -997,3 +997,54 @@ button.sort-header[aria-sort] {
 .board-who {
   flex: 1 1 auto;
 }
+
+/* ---------- Sort toolbar (top) ---------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -2px 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.toolbar select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 1px 4px;
+  text-overflow: ellipsis;
+}
+
+.sort-arrow {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A rule between the machines already added and the form that adds another. */
+#machines-list:not(:empty) + .machine-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+
+/* A three-digit percentage must not push the reset time into the next column. */
+.reading {
+  min-width: 0;
+}
+
+.reading .pct {
+  flex: none;
+}
+
+.reading .reset {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

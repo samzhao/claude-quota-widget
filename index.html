@@ -29,6 +29,12 @@
       </div>
     </header>
 
+    <div class="toolbar">
+      <label for="sort">Sort</label>
+      <select id="sort"></select>
+      <button id="sort-dir" type="button" class="icon-button" aria-label="Reverse sort order">↑</button>
+    </div>
+
     <main id="accounts" aria-live="polite"></main>
 
     <footer>
@@ -65,11 +71,6 @@
           <input id="hide-unused" type="checkbox" />
           Hide unused limits
         </label>
-        <span class="check">
-          <label for="sort">Sort</label>
-          <select id="sort"></select>
-          <button id="sort-dir" type="button" class="icon-button" aria-label="Reverse sort order">↑</button>
-        </span>
         <label class="check" id="compact-wrap" hidden>
           <input id="compact" type="checkbox" />
           Compact cards

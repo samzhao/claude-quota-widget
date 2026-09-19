@@ -218,54 +218,137 @@ function renderReading(w: UsageWindow, resetPrefix: string): HTMLElement {
 
 /* ---------- Sorting and hiding ---------- */
 
-// "added" = the order accounts were added. "room" = tightest limit. "name".
-// Anything else is a limit's key (session, weekly_all, weekly_scoped:…).
-let sortKey = loadSetting("sortKey", "added");
-let sortDir: "asc" | "desc" = loadSetting("sortDir", "asc") === "desc" ? "desc" : "asc";
+// A sort is a chain of steps, applied in order; later steps break ties.
+// Step keys: "usable" (the combined default below), "added", "room", "name",
+// or a limit's key (session, weekly_all, weekly_scoped:…).
+type SortStep = { key: string; dir: "asc" | "desc" };
+const DEFAULT_SORT: SortStep[] = [{ key: "usable", dir: "asc" }];
+const FULL = 100;
 
-function sortValue(a: AccountUsage, key: string): number | string | null {
-  if (key === "name") return a.label.toLowerCase();
-  if (a.windows.length === 0) return null;
-  if (key === "room") return Math.max(...a.windows.map((w) => w.utilization));
+function loadSortChain(): SortStep[] {
+  try {
+    const parsed: unknown = JSON.parse(loadSetting("sortChain", ""));
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed
+        .filter((step): step is SortStep => typeof step?.key === "string")
+        .map((step) => ({ key: step.key, dir: step.dir === "desc" ? "desc" : "asc" }));
+    }
+  } catch {
+    /* fall through to the default */
+  }
+  return DEFAULT_SORT;
+}
+let sortChain: SortStep[] = loadSortChain();
+
+function limitValue(a: AccountUsage, key: string): number | null {
   return a.windows.find((w) => w.key === key)?.utilization ?? null;
 }
 
+/**
+ * "Usable first": can I use this account right now?
+ * An account with a full 5-hour or weekly limit is blocked outright; one with
+ * only a model limit full still works for other models, so it ranks between.
+ * Within each group the order is 5-hour, then all models, then each model
+ * limit, least used first.
+ */
+function blockedRank(a: AccountUsage): number {
+  const full = (key: string) => (limitValue(a, key) ?? 0) >= FULL;
+  if (full("session") || full("weekly_all")) return 2;
+  return a.windows.some((w) => w.utilization >= FULL) ? 1 : 0;
+}
+
+function expandChain(columns: { key: string }[]): SortStep[] {
+  return sortChain.flatMap((step): SortStep[] =>
+    step.key === "usable"
+      ? [{ key: "blocked", dir: step.dir }, ...columns.map((c) => ({ key: c.key, dir: step.dir }))]
+      : [step],
+  );
+}
+
+function stepValue(a: AccountUsage, key: string): number | string | null {
+  if (key === "name") return a.label.toLowerCase();
+  if (a.windows.length === 0) return null;
+  if (key === "blocked") return blockedRank(a);
+  if (key === "room") return Math.max(...a.windows.map((w) => w.utilization));
+  return limitValue(a, key);
+}
+
 /** Accounts with nothing to compare (no reading, or no such limit) always sink to the bottom. */
-function sortAccounts(list: AccountUsage[]): AccountUsage[] {
-  if (sortKey === "added") return sortDir === "asc" ? list : [...list].reverse();
-  const flip = sortDir === "asc" ? 1 : -1;
+function sortAccounts(list: AccountUsage[], columns: { key: string }[]): AccountUsage[] {
+  const steps = expandChain(columns);
+  const position = new Map(list.map((a, index) => [a.id, index]));
   return [...list].sort((x, y) => {
-    const a = sortValue(x, sortKey);
-    const b = sortValue(y, sortKey);
-    if (a === null || b === null) return a === b ? 0 : a === null ? 1 : -1;
-    if (typeof a === "string" || typeof b === "string") return flip * String(a).localeCompare(String(b));
-    return flip * (a - b);
+    for (const step of steps) {
+      if (step.key === "added") {
+        const diff = position.get(x.id)! - position.get(y.id)!;
+        if (diff !== 0) return step.dir === "asc" ? diff : -diff;
+        continue;
+      }
+      const a = stepValue(x, step.key);
+      const b = stepValue(y, step.key);
+      if (a === null || b === null) {
+        if (a !== b) return a === null ? 1 : -1;
+        continue;
+      }
+      const diff =
+        typeof a === "string" || typeof b === "string"
+          ? String(a).localeCompare(String(b))
+          : a - b;
+      if (diff !== 0) return step.dir === "asc" ? diff : -diff;
+    }
+    return position.get(x.id)! - position.get(y.id)!;
   });
 }
 
-function setSort(key: string, dir: "asc" | "desc") {
-  sortKey = key;
-  sortDir = dir;
-  saveSetting("sortKey", key);
-  saveSetting("sortDir", dir);
+function setSortChain(chain: SortStep[]) {
+  sortChain = chain.length > 0 ? chain : DEFAULT_SORT;
+  saveSetting("sortChain", JSON.stringify(sortChain));
   render();
 }
 
-/** Grid headers cycle: low to high, high to low, then back to the added order. */
-function cycleSort(key: string) {
-  if (sortKey !== key) setSort(key, "asc");
-  else if (sortDir === "asc") setSort(key, "desc");
-  else setSort("added", "asc");
+/**
+ * Grid headers. Click: sort by that column alone (low to high, then high to
+ * low, then back to the default). Shift-click: add it as a further tie-breaker,
+ * or flip it if it is already in the chain.
+ */
+function onHeaderClick(key: string, extend: boolean) {
+  const at = sortChain.findIndex((step) => step.key === key);
+  if (extend) {
+    const base = sortChain.filter((step) => step.key !== "usable" && step.key !== "added");
+    if (at >= 0 && base.length === sortChain.length) {
+      setSortChain(sortChain.map((step, i) => (i === at ? { key, dir: step.dir === "asc" ? "desc" : "asc" } : step)));
+    } else {
+      setSortChain([...base, { key, dir: "asc" }]);
+    }
+    return;
+  }
+  const alone = sortChain.length === 1 && at === 0;
+  if (!alone) setSortChain([{ key, dir: "asc" }]);
+  else if (sortChain[0].dir === "asc") setSortChain([{ key, dir: "desc" }]);
+  else setSortChain(DEFAULT_SORT);
+}
+
+/** Where a column sits in the effective order, for the header's marker. */
+function headerMark(key: string, columns: { key: string }[]): { order: number; dir: "asc" | "desc" } | null {
+  const steps = expandChain(columns).filter((step) => step.key !== "blocked");
+  const index = steps.findIndex((step) => step.key === key);
+  return index < 0 ? null : { order: steps.length > 1 ? index + 1 : 0, dir: steps[index].dir };
 }
 
 function syncSortControls(columns: { key: string; label: string }[]) {
+  const labelOf = (key: string) =>
+    ({ usable: "Usable first", added: "Order added", room: "Most room left", name: "Name" })[key] ??
+    columns.find((c) => c.key === key)?.label ??
+    key;
   const options: [string, string][] = [
-    ["added", "Order added"],
+    ["usable", "Usable first"],
     ["room", "Most room left"],
-    ["name", "Name"],
     ...columns.map((c): [string, string] => [c.key, c.label]),
+    ["name", "Name"],
+    ["added", "Order added"],
   ];
-  if (!options.some(([key]) => key === sortKey)) sortKey = "added";
+  const custom = sortChain.length > 1;
+  if (custom) options.unshift(["custom", sortChain.map((step) => labelOf(step.key)).join(", then ")]);
   sortSelect.replaceChildren(
     ...options.map(([key, label]) => {
       const option = el("option", undefined, label);
@@ -273,14 +356,14 @@ function syncSortControls(columns: { key: string; label: string }[]) {
       return option;
     }),
   );
-  sortSelect.value = sortKey;
-  const numeric = sortKey !== "name" && sortKey !== "added";
-  sortDirBtn.textContent = sortDir === "asc" ? "↑" : "↓";
-  sortDirBtn.title = numeric
-    ? sortDir === "asc"
-      ? "Least used first. Click to reverse."
-      : "Most used first. Click to reverse."
-    : "Click to reverse the order";
+  sortSelect.value = custom ? "custom" : sortChain[0].key;
+  sortSelect.title =
+    sortChain[0].key === "usable"
+      ? "Accounts you can use right now come first: 5-hour, then all models, then each model limit, least used first. Full accounts sink."
+      : "Shift-click grid headers to sort by several columns";
+  const dir = sortChain[0].dir;
+  sortDirBtn.textContent = dir === "asc" ? "↑" : "↓";
+  sortDirBtn.title = dir === "asc" ? "Least used first. Click to reverse." : "Most used first. Click to reverse.";
 }
 
 async function setHidden(a: AccountUsage, hidden: boolean) {
@@ -479,12 +562,14 @@ function renderGrid(accounts: AccountUsage[]): HTMLElement {
     const th = el("button", `${className} sort-header`, label);
     th.type = "button";
     th.setAttribute("role", "columnheader");
-    if (sortKey === key) {
-      th.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
-      th.append(el("span", "sort-arrow", sortDir === "asc" ? "↑" : "↓"));
+    const mark = headerMark(key, columns);
+    if (mark) {
+      th.setAttribute("aria-sort", mark.dir === "asc" ? "ascending" : "descending");
+      const arrow = mark.dir === "asc" ? "↑" : "↓";
+      th.append(el("span", "sort-arrow", mark.order > 0 ? `${mark.order}${arrow}` : arrow));
     }
-    th.title = `Sort by ${label.toLowerCase()}`;
-    th.addEventListener("click", () => cycleSort(key));
+    th.title = `Sort by ${label.toLowerCase()}. Shift-click to add it as a tie-breaker.`;
+    th.addEventListener("click", (event) => onHeaderClick(key, event.shiftKey));
     return th;
   };
   headRow.append(header("name", "Account", "board-account"));
@@ -663,8 +748,9 @@ function render() {
   if (lastAccounts.length === 0 || editingLabel) return;
   const hiddenAccounts = lastAccounts.filter((a) => a.hidden);
   const shown = lastAccounts.filter((a) => !a.hidden);
-  syncSortControls(gridColumns(shown));
-  const sorted = sortAccounts(shown);
+  const sortColumns = gridColumns(shown);
+  syncSortControls(sortColumns);
+  const sorted = sortAccounts(shown, sortColumns);
   const parts: HTMLElement[] =
     sorted.length === 0
       ? [el("p", "message", "Every account is hidden.")]
@@ -795,8 +881,12 @@ pinBtn.addEventListener("click", async () => {
   const pinned = pinBtn.getAttribute("aria-pressed") !== "true";
   applyAppSettings(await invoke<AppSettings>("set_pinned", { pinned }));
 });
-sortSelect.addEventListener("change", () => setSort(sortSelect.value, sortDir));
-sortDirBtn.addEventListener("click", () => setSort(sortKey, sortDir === "asc" ? "desc" : "asc"));
+sortSelect.addEventListener("change", () => {
+  if (sortSelect.value !== "custom") setSortChain([{ key: sortSelect.value, dir: sortChain[0].dir }]);
+});
+sortDirBtn.addEventListener("click", () =>
+  setSortChain(sortChain.map((step) => ({ key: step.key, dir: step.dir === "asc" ? "desc" : "asc" }))),
+);
 machinesToggle.addEventListener("click", () => {
   machinesPanel.hidden = !machinesPanel.hidden;
   saveSetting("machinesOpen", machinesPanel.hidden ? "0" : "1");
