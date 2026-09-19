@@ -20,7 +20,7 @@ type AccountUsage = {
   next_check_ms: number | null;
 };
 
-type View = "grid" | "detail";
+type View = "grid" | "cards";
 type Theme = "warm" | "instrument";
 type Level = "normal" | "warning" | "critical";
 
@@ -48,7 +48,7 @@ const accountsEl = $("#accounts");
 const updatedEl = $("#updated");
 const refreshBtn = $<HTMLButtonElement>("#refresh");
 const gridBtn = $<HTMLButtonElement>("#view-grid");
-const detailBtn = $<HTMLButtonElement>("#view-detail");
+const cardsBtn = $<HTMLButtonElement>("#view-cards");
 const addForm = $<HTMLFormElement>("#add-form");
 const emailInput = $<HTMLInputElement>("#email");
 const emailToggle = $<HTMLButtonElement>("#email-toggle");
@@ -56,6 +56,8 @@ const addBtn = $<HTMLButtonElement>("#add");
 const cancelBtn = $<HTMLButtonElement>("#cancel");
 const hideUnusedInput = $<HTMLInputElement>("#hide-unused");
 const themeSelect = $<HTMLSelectElement>("#theme");
+const compactInput = $<HTMLInputElement>("#compact");
+const compactWrap = $("#compact-wrap");
 const noticeEl = $("#notice");
 
 // Per-viewer conveniences only; the app works the same if storage is unavailable.
@@ -74,13 +76,43 @@ function saveSetting(key: string, value: string) {
   }
 }
 
-let view: View = loadSetting("view", "grid") === "detail" ? "detail" : "grid";
+// "detail" is what the cards view was called in earlier builds.
+let view: View = ["cards", "detail"].includes(loadSetting("view", "grid")) ? "cards" : "grid";
+let compactCards = loadSetting("compactCards", "0") === "1";
 let hideUnused = loadSetting("hideUnused", "1") === "1";
 let theme: Theme = loadSetting("theme", "warm") === "instrument" ? "instrument" : "warm";
 let lastAccounts: AccountUsage[] = [];
 
 function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function ago(ms: number, short = false): string {
+  const minutes = Math.max(0, Math.floor((Date.now() - ms) / 60000));
+  if (minutes < 1) return short ? "now" : "just now";
+  if (minutes < 60) return short ? `${minutes}m ago` : `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return short ? `${hours}h ${minutes % 60}m ago` : `${hours} h ${minutes % 60} min ago`;
+}
+
+/** The last check failed but the login itself is fine. */
+function updateFailed(a: AccountUsage): boolean {
+  return a.status === "rate_limited" || a.status === "error";
+}
+
+function failureReason(a: AccountUsage): string {
+  return a.status === "rate_limited" ? "API throttling" : (a.message ?? "request failed");
+}
+
+function failureDetail(a: AccountUsage): string {
+  const parts = [
+    a.status === "rate_limited"
+      ? "Anthropic is throttling usage checks for this account."
+      : `The last usage check failed: ${a.message ?? "unknown reason"}.`,
+  ];
+  if (a.as_of_ms) parts.push(`Showing the reading from ${clock(a.as_of_ms)}.`);
+  if (a.next_check_ms) parts.push(`Next try ${clock(a.next_check_ms)}.`);
+  return parts.join(" ");
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -158,8 +190,9 @@ function renderReading(w: UsageWindow, resetPrefix: string): HTMLElement {
 
 function statusDot(a: AccountUsage): HTMLElement {
   const dot = el("span", `dot ${a.status}`);
-  const since = a.status !== "ok" && a.as_of_ms ? ` Reading from ${clock(a.as_of_ms)}.` : "";
-  dot.title = `${STATUS_TEXT[a.status]}: ${STATUS_HELP[a.status]}${since}`;
+  dot.title = updateFailed(a)
+    ? failureDetail(a)
+    : `${STATUS_TEXT[a.status]}: ${STATUS_HELP[a.status]}`;
   dot.setAttribute("role", "img");
   dot.setAttribute("aria-label", STATUS_TEXT[a.status]);
   return dot;
@@ -182,8 +215,19 @@ function gridColumns(accounts: AccountUsage[]): { key: string; label: string }[]
   return [...columns].map(([key, label]) => ({ key, label }));
 }
 
+/** Space is tight in the grid, so show "sam" for sam@example.com unless that is ambiguous. */
+function shortLabels(accounts: AccountUsage[]): Map<string, string> {
+  const local = (label: string) => (label.includes("@") ? label.slice(0, label.indexOf("@")) : label);
+  const counts = new Map<string, number>();
+  for (const a of accounts) counts.set(local(a.label), (counts.get(local(a.label)) ?? 0) + 1);
+  return new Map(
+    accounts.map((a) => [a.id, counts.get(local(a.label)) === 1 ? local(a.label) : a.label]),
+  );
+}
+
 function renderGrid(accounts: AccountUsage[]): HTMLElement {
   const columns = gridColumns(accounts);
+  const names = shortLabels(accounts);
   const board = el("div", "board");
   board.style.setProperty("--limit-columns", String(Math.max(1, columns.length)));
   board.setAttribute("role", "table");
@@ -206,9 +250,21 @@ function renderGrid(accounts: AccountUsage[]): HTMLElement {
 
     const name = el("div", "board-account");
     name.setAttribute("role", "rowheader");
-    const label = el("span", "account-label", a.label);
+    const label = el("span", "account-label", names.get(a.id) ?? a.label);
     label.title = [a.label, a.plan, a.read_only ? "read-only" : null].filter(Boolean).join(", ");
-    name.append(statusDot(a), label);
+    const who = el("div", "board-who");
+    who.append(label);
+    if (updateFailed(a) || a.as_of_ms) {
+      const age = a.as_of_ms ? ago(a.as_of_ms, true) : "no reading";
+      const sub = el(
+        "span",
+        updateFailed(a) ? `board-age ${a.status}` : "board-age",
+        updateFailed(a) ? `${a.status === "rate_limited" ? "throttled" : "failed"}, ${age}` : age,
+      );
+      sub.title = updateFailed(a) ? failureDetail(a) : `Read at ${clock(a.as_of_ms!)}`;
+      who.append(sub);
+    }
+    name.append(statusDot(a), who);
     row.append(name);
 
     if (a.status !== "ok" && a.windows.length === 0) {
@@ -233,7 +289,7 @@ function renderGrid(accounts: AccountUsage[]): HTMLElement {
   return board;
 }
 
-/* ---------- Detail view: one block per account ---------- */
+/* ---------- Cards view: one block per account ---------- */
 
 function renderRemove(a: AccountUsage): HTMLElement {
   const remove = el("button", "link danger", "Remove account");
@@ -260,8 +316,8 @@ function renderRemove(a: AccountUsage): HTMLElement {
   return remove;
 }
 
-function renderDetail(a: AccountUsage): HTMLElement {
-  const block = el("section", "account");
+function renderCard(a: AccountUsage): HTMLElement {
+  const block = el("section", compactCards ? "account compact" : "account");
 
   const head = el("div", "account-head");
   const title = el("div", "account-title");
@@ -272,22 +328,51 @@ function renderDetail(a: AccountUsage): HTMLElement {
     tag.title = "This is Claude Code's own login on this Mac. The app only reads it.";
     title.append(tag);
   }
-  const chip = el("span", `chip ${a.status}`, STATUS_TEXT[a.status]);
-  chip.title = STATUS_HELP[a.status];
+  // The chip is about the login. A failed check with a working login still
+  // reads "connected"; the failure gets its own badge below.
+  const loginStatus = updateFailed(a) ? "ok" : a.status;
+  const chip = el("span", `chip ${loginStatus}`, STATUS_TEXT[loginStatus]);
+  chip.title = STATUS_HELP[loginStatus];
   head.append(title, chip);
   block.append(head);
 
-  if (a.message) {
-    const stale = a.status !== "ok" && a.windows.length > 0;
-    const since = stale && a.as_of_ms ? ` Showing the reading from ${clock(a.as_of_ms)}.` : "";
-    block.append(el("p", "message", `${a.message}${since}`));
+  const meta = el("div", "account-meta");
+  if (a.as_of_ms) {
+    const updated = el("span", "updated-ago", `Updated ${ago(a.as_of_ms)}`);
+    updated.title = `Read at ${clock(a.as_of_ms)}`;
+    meta.append(updated);
   }
+  if (updateFailed(a)) {
+    const badge = el("span", `badge ${a.status}`, `Update failed: ${failureReason(a)}`);
+    badge.title = failureDetail(a);
+    meta.append(badge);
+  }
+  if (compactCards && !a.read_only) {
+    const remove = renderRemove(a);
+    remove.classList.add("meta-action");
+    meta.append(remove);
+  }
+  if (meta.childElementCount > 0) block.append(meta);
+
+  if (a.message && !updateFailed(a)) block.append(el("p", "message", a.message));
 
   const shown = a.windows.filter((w) => !(hideUnused && isUnused(w)));
-  for (const w of shown) {
-    const row = el("div", "limit");
-    row.append(el("span", "limit-label", w.label), renderGauge(w), renderReading(w, "resets in "));
-    block.append(row);
+  if (compactCards) {
+    // Same three-across layout as the grid, inside the card.
+    const strip = el("div", "limit-strip");
+    strip.style.setProperty("--limit-columns", String(Math.max(1, shown.length)));
+    for (const w of shown) {
+      const cell = el("div", "limit-cell");
+      cell.append(el("span", "limit-label", w.label), renderGauge(w), renderReading(w, ""));
+      strip.append(cell);
+    }
+    if (shown.length > 0) block.append(strip);
+  } else {
+    for (const w of shown) {
+      const row = el("div", "limit");
+      row.append(el("span", "limit-label", w.label), renderGauge(w), renderReading(w, "resets in "));
+      block.append(row);
+    }
   }
   const hidden = a.windows.length - shown.length;
   if (hidden > 0) {
@@ -296,7 +381,7 @@ function renderDetail(a: AccountUsage): HTMLElement {
     block.append(el("p", "message", "No limits reported for this account."));
   }
 
-  if (!a.read_only) block.append(renderRemove(a));
+  if (!a.read_only && !compactCards) block.append(renderRemove(a));
   return block;
 }
 
@@ -309,18 +394,23 @@ function applyTheme() {
 
 function render() {
   gridBtn.setAttribute("aria-pressed", String(view === "grid"));
-  detailBtn.setAttribute("aria-pressed", String(view === "detail"));
+  cardsBtn.setAttribute("aria-pressed", String(view === "cards"));
   hideUnusedInput.checked = hideUnused;
+  compactInput.checked = compactCards;
+  compactWrap.hidden = view !== "cards";
   if (lastAccounts.length === 0) return;
   accountsEl.replaceChildren(
-    ...(view === "grid" ? [renderGrid(lastAccounts)] : lastAccounts.map(renderDetail)),
+    ...(view === "grid" ? [renderGrid(lastAccounts)] : lastAccounts.map(renderCard)),
   );
+  // Repainted every minute along with the rest, so "X min ago" stays true.
+  updatedEl.textContent = describeFreshness(lastAccounts);
 }
 
 function describeFreshness(accounts: AccountUsage[]): string {
   const readings = accounts.map((a) => a.as_of_ms).filter((ms): ms is number => ms !== null);
   if (readings.length === 0) return "";
-  const parts = [`As of ${clock(Math.min(...readings))}`];
+  const oldest = Math.min(...readings);
+  const parts = [`Oldest reading ${ago(oldest)}`];
   const next = accounts.map((a) => a.next_check_ms).filter((ms): ms is number => ms !== null);
   if (next.length > 0) parts.push(`next check ${clock(Math.min(...next))}`);
   return parts.join(", ");
@@ -348,7 +438,6 @@ async function refresh(force = false) {
   try {
     lastAccounts = await invoke<AccountUsage[]>("list_usage", { force });
     render();
-    updatedEl.textContent = describeFreshness(lastAccounts);
     updatedEl.title = "Readings are cached. Anthropic throttles this endpoint, so checks are spaced out.";
   } catch (error) {
     accountsEl.replaceChildren(el("p", "message", `Could not load usage: ${String(error)}`));
@@ -401,7 +490,12 @@ hideUnusedInput.addEventListener("change", () => {
 });
 
 gridBtn.addEventListener("click", () => setView("grid"));
-detailBtn.addEventListener("click", () => setView("detail"));
+cardsBtn.addEventListener("click", () => setView("cards"));
+compactInput.addEventListener("change", () => {
+  compactCards = compactInput.checked;
+  saveSetting("compactCards", compactCards ? "1" : "0");
+  render();
+});
 cancelBtn.addEventListener("click", () => void invoke("cancel_login"));
 refreshBtn.addEventListener("click", () => void refresh(true));
 themeSelect.addEventListener("change", () => {

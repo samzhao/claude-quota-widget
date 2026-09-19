@@ -523,3 +523,107 @@ p#updated:empty {
     transition: none;
   }
 }
+
+/* ---------- Reading age and failed-update badge ---------- */
+
+.account-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.updated-ago {
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  color: var(--warning);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.badge.error {
+  color: var(--critical);
+}
+
+.board-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.board-age {
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.board-age.rate_limited {
+  color: var(--warning);
+}
+
+.board-age.error {
+  color: var(--critical);
+}
+
+/* ---------- Compact cards: the grid's three-across limits inside a card ---------- */
+
+.account.compact {
+  padding: 8px 12px;
+  margin-bottom: 6px;
+}
+
+.account.compact .account-head {
+  margin-bottom: 2px;
+}
+
+.limit-strip {
+  display: grid;
+  grid-template-columns: repeat(var(--limit-columns), minmax(0, 1fr));
+  column-gap: 14px;
+  margin-top: 4px;
+}
+
+.limit-cell {
+  min-width: 0;
+}
+
+.limit-cell .limit-label {
+  display: block;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.account.compact button.link.danger {
+  margin-top: 4px;
+}
+
+.footer-meta {
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.board-row {
+  grid-template-columns: minmax(104px, 1.35fr) repeat(var(--limit-columns), minmax(74px, 1fr));
+}
+
+.account-meta .meta-action {
+  margin: 0 0 0 auto;
+}
+
+.account.compact .account-meta {
+  margin-bottom: 2px;
+}

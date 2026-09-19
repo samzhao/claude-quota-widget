@@ -13,7 +13,7 @@
       <div class="header-actions">
         <div class="segmented" role="group" aria-label="View">
           <button id="view-grid" type="button" aria-pressed="true">Grid</button>
-          <button id="view-detail" type="button" aria-pressed="false">Detail</button>
+          <button id="view-cards" type="button" aria-pressed="false">Cards</button>
         </div>
         <button id="refresh" type="button" title="Refresh now">Refresh</button>
       </div>
@@ -40,6 +40,10 @@
         <label class="check">
           <input id="hide-unused" type="checkbox" />
           Hide unused limits
+        </label>
+        <label class="check" id="compact-wrap" hidden>
+          <input id="compact" type="checkbox" />
+          Compact cards
         </label>
         <label class="check">
           Theme
