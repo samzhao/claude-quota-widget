@@ -18,6 +18,12 @@ const MAX_TARGET_CHARS: usize = 128;
 const CONNECT_TIMEOUT_SECS: u32 = 6;
 /// Each profile costs one `claude` start-up on the far side, so allow for a few.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(45);
+/// Caps on what a machine may send back. A machine you trusted once could be
+/// compromised later, so its reply is treated as untrusted input: bounded in
+/// total size, in number of sightings, and in the length of each string.
+const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+const MAX_SIGHTINGS: usize = 16;
+const MAX_FIELD_CHARS: usize = 128;
 
 /// Runs on the remote under plain `sh` (a zsh login shell aborts on unmatched
 /// globs). Looks at the default config dir plus the two multi-profile layouts
@@ -107,6 +113,10 @@ pub fn validate(name: &str, ssh: &str, existing: &[Machine]) -> Result<Machine, 
 }
 
 /// Turns the probe's output into sightings. Pure, so it can be tested without SSH.
+fn cap(value: &str) -> String {
+    value.chars().filter(|c| !c.is_control()).take(MAX_FIELD_CHARS).collect()
+}
+
 pub fn parse_probe(output: &str) -> Result<Vec<Sighting>, String> {
     if output.lines().any(|l| l.trim() == "CQW_NO_CLAUDE") {
         return Err("Claude Code is not installed there (no `claude` command).".to_string());
@@ -141,10 +151,13 @@ pub fn parse_probe(output: &str) -> Result<Vec<Sighting>, String> {
         let Some(email) = status.get("email").and_then(|v| v.as_str()) else { continue };
         let dir = dir.trim().trim_end_matches('/');
         sightings.push(Sighting {
-            email: email.trim().to_lowercase(),
-            profile: tidy(dir),
+            email: cap(email.trim()).to_lowercase(),
+            profile: cap(&tidy(dir)),
             running: running.get(dir).copied().unwrap_or(0),
         });
+        if sightings.len() >= MAX_SIGHTINGS {
+            break;
+        }
     }
     Ok(sightings)
 }
@@ -193,7 +206,9 @@ pub async fn probe(machine: &Machine) -> Result<Vec<Sighting>, String> {
         .map_err(|_| "The check timed out.".to_string())?
         .map_err(|e| e.to_string())?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut bytes = output.stdout;
+    bytes.truncate(MAX_OUTPUT_BYTES);
+    let stdout = String::from_utf8_lossy(&bytes);
     if !output.status.success() && !stdout.contains("CQW_DONE") {
         return Err(explain_ssh_failure(&String::from_utf8_lossy(&output.stderr), &machine.ssh));
     }
@@ -230,6 +245,27 @@ CQW_DONE\n";
         assert!(parse_probe("CQW_PROFILE\t/x\t{}\n").is_err());
         assert!(parse_probe("CQW_NO_CLAUDE\n").unwrap_err().contains("not installed"));
         assert_eq!(parse_probe("CQW_HOME\t/h\nCQW_DONE\n").unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_hostile_remote_cannot_flood_us() {
+        let mut probe = String::new();
+        for i in 0..40 {
+            probe.push_str(&format!(
+                "CQW_PROFILE\t/Users/pat/p{i}\t{{\"loggedIn\":true,\"email\":\"{}@example.com\"}}\n",
+                "x".repeat(500)
+            ));
+        }
+        probe.push_str("CQW_HOME\t/Users/pat\nCQW_DONE\n");
+        let sightings = parse_probe(&probe).unwrap();
+        assert_eq!(sightings.len(), MAX_SIGHTINGS);
+        assert!(sightings.iter().all(|s| s.email.chars().count() <= MAX_FIELD_CHARS));
+    }
+
+    #[test]
+    fn control_characters_from_a_remote_are_stripped() {
+        let probe = "CQW_PROFILE\t/Users/pat/.claude\t{\"loggedIn\":true,\"email\":\"a\\u0007b@example.com\"}\nCQW_HOME\t/Users/pat\nCQW_DONE\n";
+        assert_eq!(parse_probe(probe).unwrap()[0].email, "ab@example.com");
     }
 
     #[test]

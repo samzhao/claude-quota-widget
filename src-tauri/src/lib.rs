@@ -247,14 +247,14 @@ async fn collect_usage(app: &AppHandle, force: bool) -> Result<Vec<AccountUsage>
             Ok(renewed) => {
                 // Persist before use: losing a rotated refresh token logs the account out.
                 if let Err(error) = credentials::write_managed(&target.id, &renewed) {
-                    eprintln!("[oauth] could not store renewed login for {}: {error}", target.label);
+                    eprintln!("[oauth] could not store renewed login for account {}: {error}", target.id);
                 }
                 entry.refresh_retry_at_ms = 0.0;
                 target.oauth = Some(renewed);
             }
             Err(oauth::RefreshError::Dead) => entry.refresh_dead = true,
             Err(oauth::RefreshError::Transient(reason)) => {
-                eprintln!("[oauth] renew failed for {}: {reason}", target.label);
+                eprintln!("[oauth] renew failed for account {}: {reason}", target.id);
                 entry.refresh_retry_at_ms = now + 2.0 * 60_000.0;
             }
         }

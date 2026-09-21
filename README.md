@@ -56,6 +56,7 @@ Open **Machines** at the bottom of the window and add a name plus an SSH destina
 
 - It uses the SSH keys and agent you already have, in batch mode, so it never prompts and never tries a password. If a host is not trusted yet, it tells you the command to run once.
 - It only reads. The only things that come back are email addresses and a process count. No tokens leave the other machine.
+- A machine's answer is taken at its word, so only add machines you trust. A compromised one could claim to be using an account it is not; it cannot reach your tokens.
 - It looks at `~/.claude`, `~/claude-*` and `~/.claude-profiles/*`. Nothing runs over SSH until you add a machine.
 
 ## Requirements
